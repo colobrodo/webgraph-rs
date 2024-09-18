@@ -55,6 +55,7 @@ sysinfo = "0.30.13"
 
 # for zuckerli benchmarks
 webgraph_rust = { git = "https://github.com/caba5/WebGraph.git" }
+cap = { version = "0.1.2", features = ["stats"] }
 
 [build-dependencies]
 built = { version = "0.7", features= ["chrono", "git2"] }

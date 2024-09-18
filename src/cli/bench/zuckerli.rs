@@ -7,6 +7,7 @@
 
 use crate::prelude::*;
 use anyhow::Result;
+use cap::Cap;
 use clap::{ArgMatches, Args, Command, FromArgMatches};
 use dsi_bitstream::prelude::*;
 use itertools::Itertools;
@@ -14,20 +15,28 @@ use lender::*;
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
+use std::alloc;
 use std::fs::File;
 use std::hint::black_box;
 use std::io::BufReader;
 use std::path::PathBuf;
+use tempfile::NamedTempFile;
+
 use webgraph_rust::bitstreams::BinaryReader;
 use webgraph_rust::huffman_zuckerli::huffman_decoder::HuffmanDecoder;
 use webgraph_rust::properties;
+use webgraph_rust::utils::EncodingType;
 
 use webgraph_rust::webgraph::zuckerli_in::{BVGraph, BVGraphBuilder, NUM_CONTEXTS};
+use webgraph_rust::webgraph::zuckerli_out::BVGraphBuilder as OutBVGraphBuilder;
 use webgraph_rust::{
     properties::Properties,
     utils::encodings::{GammaCode, Huff, UnaryCode, UniversalCode, ZetaCode},
     ImmutableGraph,
 };
+
+#[global_allocator]
+static ALLOCATOR: Cap<alloc::System> = Cap::new(alloc::System, usize::MAX);
 
 type ZuckerliGraph = BVGraph<
     Huff,
@@ -67,17 +76,9 @@ pub struct CliArgs {
     #[arg(short = 'f', long)]
     pub first: bool,
 
-    /// Static dispatch for speed tests (default BvGraph parameters).
-    #[arg(short = 'S', long = "static")]
-    pub _static: bool,
-
-    /// Test sequential high-speed offset/degree scanning.
-    #[arg(short = 'd', long)]
-    pub degrees: bool,
-
-    /// Do not test speed, but check that the sequential and random-access successor lists are the same.
-    #[arg(short = 'c', long)]
-    pub check: bool,
+    /// Test memory usage during graph compression (the src should refere to the basename of a bvgraph with this option enabled).
+    #[arg(short = 'm', long)]
+    pub memory: bool,
 }
 
 pub fn cli(command: Command) -> Command {
@@ -87,33 +88,31 @@ pub fn cli(command: Command) -> Command {
 pub fn main(submatches: &ArgMatches) -> Result<()> {
     let args = CliArgs::from_arg_matches(submatches)?;
 
-    match get_endianness(&args.src)?.as_str() {
-        #[cfg(any(
-            feature = "be_bins",
-            not(any(feature = "be_bins", feature = "le_bins"))
-        ))]
-        BE::NAME => match args._static {
-            true => bench_webgraph::<BE, Static>(args),
-            false => bench_webgraph::<BE, Dynamic>(args),
-        },
-        #[cfg(any(
-            feature = "le_bins",
-            not(any(feature = "be_bins", feature = "le_bins"))
-        ))]
-        LE::NAME => match args._static {
-            true => bench_webgraph::<LE, Static>(args),
-            false => bench_webgraph::<LE, Dynamic>(args),
-        },
-        e => panic!("Unknown endianness: {}", e),
+    // zuckerli implementation (webgraph_rust) does not support different endianness, neither dynamic dispatch
+    if args.memory {
+        bench_memory_usage(&args);
+    } else {
+        match args.random {
+            Some(samples) => {
+                bench_random(
+                    create_zuckerli_graph(&args.src).unwrap(),
+                    samples,
+                    args.repeats,
+                    args.first,
+                );
+            }
+            None => {
+                bench_seq(create_zuckerli_graph(&args.src).unwrap(), args.repeats);
+            }
+        }
     }
+    Ok(())
 }
 
 fn create_zuckerli_graph(source_name: &PathBuf) -> Option<ZuckerliGraph> {
     let properties_path = source_name.with_extension("properties");
     let properties_file = File::open(properties_path);
-    // TODO: return result with error or at least panic
-    let properties_file = properties_file.unwrap();
-    // properties_file.unwrap_or_else(|_| panic!("Could not find {}", properties_path.display()));
+    let properties_file = properties_file.expect("Cannot find the .properties file");
     let p = java_properties::read(BufReader::new(properties_file))
         .unwrap_or_else(|_| panic!("Failed parsing the properties file"));
 
@@ -148,6 +147,64 @@ fn create_zuckerli_graph(source_name: &PathBuf) -> Option<ZuckerliGraph> {
     .build();
 
     Some(graph)
+}
+
+fn bench_memory_usage(args: &CliArgs) {
+    let properties_path = args.src.with_extension("properties");
+    let properties_file = File::open(properties_path);
+    let properties_file = properties_file.expect("Cannot find the .properties file");
+    let p = java_properties::read(BufReader::new(properties_file))
+        .unwrap_or_else(|_| panic!("Failed parsing the properties file"));
+    let props = Properties::from(p);
+
+    match (props.block_coding, props.block_count_coding, props.outdegree_coding, props.offset_coding, props.reference_coding, props.interval_coding, props.residual_coding) {
+        (EncodingType::GAMMA, EncodingType::GAMMA, EncodingType::GAMMA, EncodingType::GAMMA, EncodingType::UNARY, EncodingType::GAMMA, EncodingType::ZETA) => {},
+        _ => panic!("Only the default encoding types sequence (GAMMA, GAMMA, GAMMA, GAMMA, UNARY, GAMMA, ZETA) is supported for Huffman compression")
+    };
+
+    let tmp_file = NamedTempFile::new().unwrap();
+    let tmp_path = tmp_file.path();
+
+    // keep the same parameters readed from the properities file
+    let mut bvgraph = OutBVGraphBuilder::<
+        GammaCode,
+        GammaCode,
+        GammaCode,
+        GammaCode,
+        UnaryCode,
+        GammaCode,
+        ZetaCode,
+        Huff,
+        GammaCode,
+        Huff,
+        GammaCode,
+        UnaryCode,
+        Huff,
+        Huff,
+    >::new()
+    .set_in_min_interval_len(props.min_interval_len)
+    .set_out_min_interval_len(props.min_interval_len)
+    .set_in_max_ref_count(props.max_ref_count)
+    .set_out_max_ref_count(props.max_ref_count)
+    .set_in_window_size(props.window_size)
+    .set_out_window_size(props.window_size)
+    .set_in_zeta(props.zeta_k)
+    .set_out_zeta(props.zeta_k)
+    .set_num_nodes(props.nodes)
+    .set_num_edges(props.arcs)
+    .load_graph(&args.src.to_str().unwrap())
+    .load_offsets(&args.src.to_str().unwrap())
+    .load_outdegrees()
+    .build();
+
+    let allocated_before_store = ALLOCATOR.total_allocated();
+
+    bvgraph
+        .store(&tmp_path.to_str().unwrap())
+        .expect("Failed storing the graph");
+
+    let allocated_by_store = ALLOCATOR.total_allocated() - allocated_before_store;
+    println!("Allocated {}B to store the graph", allocated_by_store);
 }
 
 fn bench_random(graph: ZuckerliGraph, samples: usize, repeats: usize, first: bool) {
@@ -225,63 +282,4 @@ fn bench_seq(graph: ZuckerliGraph, repeats: usize) {
 
         assert_eq!(c, graph.num_arcs());
     }
-}
-
-fn bench_webgraph<E: Endianness, D: Dispatch>(args: CliArgs) -> Result<()>
-where
-    for<'a> BufBitReader<E, MemWordReader<u32, &'a [u32]>>: CodeRead<E> + BitSeek,
-{
-    if args.check {
-        let graph = BvGraph::with_basename(&args.src).endianness::<E>().load()?;
-
-        let seq_graph = BvGraphSeq::with_basename(&args.src)
-            .endianness::<E>()
-            .load()?;
-
-        let mut deg_reader = seq_graph.offset_deg_iter();
-
-        // Check that sequential and random-access interfaces return the same result
-        for_![ (node, seq_succ) in seq_graph {
-            let succ = graph.successors(node);
-
-            assert_eq!(deg_reader.next_degree()?, seq_succ.len());
-            assert_eq!(succ.collect_vec(), seq_succ.collect_vec());
-        }];
-    } else if args.degrees {
-        let seq_graph = BvGraphSeq::with_basename(&args.src)
-            .endianness::<E>()
-            .load()?;
-
-        for _ in 0..args.repeats {
-            let mut deg_reader = seq_graph.offset_deg_iter();
-
-            let mut c: u64 = 0;
-            let start = std::time::Instant::now();
-            for _ in 0..seq_graph.num_nodes() {
-                c += black_box(deg_reader.next_degree()? as u64);
-            }
-            println!(
-                "Degrees Only:{:>20} ns/arc",
-                (start.elapsed().as_secs_f64() / c as f64) * 1e9
-            );
-
-            assert_eq!(c, seq_graph.num_arcs_hint().unwrap());
-        }
-    } else {
-        // webgraph_rust doesn't support dynamic dispatch
-        match args.random {
-            Some(samples) => {
-                bench_random(
-                    create_zuckerli_graph(&args.src).unwrap(),
-                    samples,
-                    args.repeats,
-                    args.first,
-                );
-            }
-            None => {
-                bench_seq(create_zuckerli_graph(&args.src).unwrap(), args.repeats);
-            }
-        }
-    }
-    Ok(())
 }
