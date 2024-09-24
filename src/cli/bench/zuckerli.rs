@@ -5,13 +5,9 @@
  * SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
  */
 
-use crate::prelude::*;
 use anyhow::Result;
 use cap::Cap;
 use clap::{ArgMatches, Args, Command, FromArgMatches};
-use dsi_bitstream::prelude::*;
-use itertools::Itertools;
-use lender::*;
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -24,14 +20,13 @@ use tempfile::NamedTempFile;
 
 use webgraph_rust::bitstreams::BinaryReader;
 use webgraph_rust::huffman_zuckerli::huffman_decoder::HuffmanDecoder;
-use webgraph_rust::properties;
 use webgraph_rust::utils::EncodingType;
 
 use webgraph_rust::webgraph::zuckerli_in::{BVGraph, BVGraphBuilder, NUM_CONTEXTS};
 use webgraph_rust::webgraph::zuckerli_out::BVGraphBuilder as OutBVGraphBuilder;
 use webgraph_rust::{
     properties::Properties,
-    utils::encodings::{GammaCode, Huff, UnaryCode, UniversalCode, ZetaCode},
+    utils::encodings::{GammaCode, Huff, UnaryCode, ZetaCode},
     ImmutableGraph,
 };
 
@@ -201,13 +196,14 @@ fn bench_memory_usage(args: &CliArgs) {
 
     let allocated_before_store = ALLOCATOR.total_allocated();
 
-    bvgraph
-        .store(tmp_path)
-        .expect("Failed storing the graph");
+    bvgraph.store(tmp_path).expect("Failed storing the graph");
 
     let allocated_by_store = ALLOCATOR.total_allocated() - allocated_before_store;
-    println!("Allocated a total of {}B to store the graph", allocated_by_store);
-    println!("Used a peak of {}B", ALLOCATOR.max_allocated());
+    println!(
+        "Allocated a total of {}B to store the graph",
+        allocated_by_store
+    );
+    println!("With a peak of {}B", ALLOCATOR.max_allocated());
 }
 
 fn bench_random(graph: ZuckerliGraph, samples: usize, repeats: usize, first: bool) {
