@@ -197,14 +197,17 @@ fn bench_memory_usage(args: &CliArgs) {
     .load_outdegrees()
     .build();
 
+    let tmp_path = tmp_path.to_str().unwrap();
+
     let allocated_before_store = ALLOCATOR.total_allocated();
 
     bvgraph
-        .store(&tmp_path.to_str().unwrap())
+        .store(tmp_path)
         .expect("Failed storing the graph");
 
     let allocated_by_store = ALLOCATOR.total_allocated() - allocated_before_store;
-    println!("Allocated {}B to store the graph", allocated_by_store);
+    println!("Allocated a total of {}B to store the graph", allocated_by_store);
+    println!("Used a peak of {}B", ALLOCATOR.max_allocated());
 }
 
 fn bench_random(graph: ZuckerliGraph, samples: usize, repeats: usize, first: bool) {
@@ -272,8 +275,7 @@ fn bench_seq(graph: ZuckerliGraph, repeats: usize) {
         while let Some(node) = iter.next() {
             c += graph
                 .decode_list(node, &mut reader, None, &mut [], &mut huff_decoder)
-                .into_iter()
-                .count();
+                .len();
         }
         println!(
             "Sequential:{:>20} ns/arc",
