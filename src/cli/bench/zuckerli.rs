@@ -16,14 +16,11 @@ use std::fs::File;
 use std::hint::black_box;
 use std::io::BufReader;
 use std::path::PathBuf;
-use tempfile::NamedTempFile;
 
 use webgraph_rust::bitstreams::BinaryReader;
 use webgraph_rust::huffman_zuckerli::huffman_decoder::HuffmanDecoder;
-use webgraph_rust::utils::EncodingType;
 
 use webgraph_rust::webgraph::zuckerli_in::{BVGraph, BVGraphBuilder, NUM_CONTEXTS};
-use webgraph_rust::webgraph::zuckerli_out::BVGraphBuilder as OutBVGraphBuilder;
 use webgraph_rust::{
     properties::Properties,
     utils::encodings::{GammaCode, Huff, UnaryCode, ZetaCode},
@@ -71,7 +68,7 @@ pub struct CliArgs {
     #[arg(short = 'f', long)]
     pub first: bool,
 
-    /// Test memory usage during graph compression (the src should refere to the basename of a bvgraph with this option enabled).
+    /// Test memory usage after loading a zuckerli graph.
     #[arg(short = 'm', long)]
     pub memory: bool,
 }
@@ -145,65 +142,16 @@ fn create_zuckerli_graph(source_name: &PathBuf) -> Option<ZuckerliGraph> {
 }
 
 fn bench_memory_usage(args: &CliArgs) {
-    let properties_path = args.src.with_extension("properties");
-    let properties_file = File::open(properties_path);
-    let properties_file = properties_file.expect("Cannot find the .properties file");
-    let p = java_properties::read(BufReader::new(properties_file))
-        .unwrap_or_else(|_| panic!("Failed parsing the properties file"));
-    let props = Properties::from(p);
+    let allocated_before_read = ALLOCATOR.allocated();
+    let graph = create_zuckerli_graph(&args.src).expect("Failed loading graph");
+    let allocated_by_graph = ALLOCATOR.allocated() - allocated_before_read;
 
-    match (props.block_coding, props.block_count_coding, props.outdegree_coding, props.offset_coding, props.reference_coding, props.interval_coding, props.residual_coding) {
-        (EncodingType::GAMMA, EncodingType::GAMMA, EncodingType::GAMMA, EncodingType::GAMMA, EncodingType::UNARY, EncodingType::GAMMA, EncodingType::ZETA) => {},
-        _ => panic!("Only the default encoding types sequence (GAMMA, GAMMA, GAMMA, GAMMA, UNARY, GAMMA, ZETA) is supported for Huffman compression")
-    };
-
-    let tmp_file = NamedTempFile::new().unwrap();
-    let tmp_path = tmp_file.path();
-
-    // keep the same parameters readed from the properities file
-    let mut bvgraph = OutBVGraphBuilder::<
-        GammaCode,
-        GammaCode,
-        GammaCode,
-        GammaCode,
-        UnaryCode,
-        GammaCode,
-        ZetaCode,
-        Huff,
-        GammaCode,
-        Huff,
-        GammaCode,
-        UnaryCode,
-        Huff,
-        Huff,
-    >::new()
-    .set_in_min_interval_len(props.min_interval_len)
-    .set_out_min_interval_len(props.min_interval_len)
-    .set_in_max_ref_count(props.max_ref_count)
-    .set_out_max_ref_count(props.max_ref_count)
-    .set_in_window_size(props.window_size)
-    .set_out_window_size(props.window_size)
-    .set_in_zeta(props.zeta_k)
-    .set_out_zeta(props.zeta_k)
-    .set_num_nodes(props.nodes)
-    .set_num_edges(props.arcs)
-    .load_graph(&args.src.to_str().unwrap())
-    .load_offsets(&args.src.to_str().unwrap())
-    .load_outdegrees()
-    .build();
-
-    let tmp_path = tmp_path.to_str().unwrap();
-
-    let allocated_before_store = ALLOCATOR.total_allocated();
-
-    bvgraph.store(tmp_path).expect("Failed storing the graph");
-
-    let allocated_by_store = ALLOCATOR.total_allocated() - allocated_before_store;
     println!(
-        "Allocated a total of {}B to store the graph",
-        allocated_by_store
+        "Allocated a total of {}B to load the graph at '{}' ({} nodes)",
+        allocated_by_graph,
+        args.src.display(),
+        graph.num_nodes()
     );
-    println!("With a peak of {}B", ALLOCATOR.max_allocated());
 }
 
 fn bench_random(graph: ZuckerliGraph, samples: usize, repeats: usize, first: bool) {
