@@ -201,7 +201,7 @@ fn bench_random(graph: ZuckerliGraph, samples: usize, repeats: usize, first: boo
         println!(
             "{}:    {:>20} ns/arc",
             if first { "First" } else { "Random" },
-            (start.elapsed().as_secs_f64() / c.min(1) as f64) * 1e9
+            (start.elapsed().as_secs_f64() / c.max(1) as f64) * 1e9
         );
     }
 }
