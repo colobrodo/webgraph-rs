@@ -10,6 +10,7 @@ use clap::{ArgMatches, Command};
 pub mod arcs;
 pub mod ascii;
 pub mod bvgraph;
+pub mod el;
 pub mod endianness;
 
 pub const COMMAND_NAME: &str = "to";
@@ -24,6 +25,7 @@ pub fn cli(command: Command) -> Command {
     let sub_command = bvgraph::cli(sub_command);
     let sub_command = arcs::cli(sub_command);
     let sub_command = endianness::cli(sub_command);
+    let sub_command = el::cli(sub_command);
     command.subcommand(sub_command.display_order(0))
 }
 
@@ -33,6 +35,7 @@ pub fn main(submatches: &ArgMatches) -> Result<()> {
         Some((bvgraph::COMMAND_NAME, sub_m)) => bvgraph::main(sub_m),
         Some((arcs::COMMAND_NAME, sub_m)) => arcs::main(sub_m),
         Some((endianness::COMMAND_NAME, sub_m)) => endianness::main(sub_m),
+        Some((el::COMMAND_NAME, sub_m)) => el::main(sub_m),
         Some((command_name, _)) => {
             eprintln!("Unknown command: {:?}", command_name);
             std::process::exit(1);

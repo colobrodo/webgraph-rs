@@ -1,0 +1,67 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+ */
+
+use crate::graphs::bvgraph::{get_endianness, CodeRead};
+use crate::traits::SequentialLabeling;
+use anyhow::Result;
+use clap::{ArgMatches, Args, Command, FromArgMatches};
+use dsi_bitstream::prelude::*;
+use dsi_progress_logger::prelude::*;
+use lender::*;
+use std::path::PathBuf;
+
+pub const COMMAND_NAME: &str = "el";
+
+#[derive(Args, Debug)]
+#[command(about = "Dumps a graph in el (edge list) format: a line for each edge with source and taregt separated by tab.", long_about = None)]
+pub struct CliArgs {
+    /// The basename of the graph.
+    pub src: PathBuf,
+}
+
+pub fn cli(command: Command) -> Command {
+    command.subcommand(CliArgs::augment_args(Command::new(COMMAND_NAME)).display_order(0))
+}
+
+pub fn main(submatches: &ArgMatches) -> Result<()> {
+    let args = CliArgs::from_arg_matches(submatches)?;
+
+    match get_endianness(&args.src)?.as_str() {
+        #[cfg(any(
+            feature = "be_bins",
+            not(any(feature = "be_bins", feature = "le_bins"))
+        ))]
+        BE::NAME => el_convert::<BE>(args),
+        #[cfg(any(
+            feature = "le_bins",
+            not(any(feature = "be_bins", feature = "le_bins"))
+        ))]
+        LE::NAME => el_convert::<LE>(args),
+        e => panic!("Unknown endianness: {}", e),
+    }
+}
+
+pub fn el_convert<E: Endianness + 'static>(args: CliArgs) -> Result<()>
+where
+    for<'a> BufBitReader<E, MemWordReader<u32, &'a [u32]>>: CodeRead<E> + BitSeek,
+{
+    let seq_graph = crate::graphs::bvgraph::sequential::BvGraphSeq::with_basename(args.src)
+        .endianness::<E>()
+        .load()?;
+
+    let mut pl = ProgressLogger::default();
+    pl.display_memory(true).item_name("offset");
+    pl.start("Computing offsets...");
+
+    let mut iter = seq_graph.iter();
+    while let Some((node_id, successors)) = iter.next() {
+        for successor in successors {
+            println!("{}\t{}", node_id, successor);
+        }
+    }
+
+    pl.done();
+
+    Ok(())
+}
