@@ -181,6 +181,43 @@ pub struct DynCodesDecoderFactory<
 impl<E: Endianness, F: BitReaderFactory<E>, OFF: IndexedSeq<Input = usize, Output = usize>>
     DynCodesDecoderFactory<E, F, OFF>
 where
+    for<'a> &'a OFF: IntoIterator<Item = usize>, // This dependence can soon be removed, as there will be a IndexedSeq::iter method
+{
+    /// Remaps the offsets in a slice of `usize`.
+    ///
+    /// This method is mainly useful for benchmarking and testing purposes, as
+    /// representing the offsets as a slice increasing significantly the
+    /// memory footprint.
+    ///
+    /// This method is used by [`BvGraph::offsets_to_slice`].
+    pub fn offsets_to_slice(self) -> DynCodesDecoderFactory<E, F, SliceSeq<usize, Box<[usize]>>> {
+        DynCodesDecoderFactory {
+            factory: self.factory,
+            offsets: <Box<[usize]> as Into<SliceSeq<usize, Box<[usize]>>>>::into(
+                self.offsets
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            )
+            .into(),
+            compression_flags: self.compression_flags,
+            read_outdegree: self.read_outdegree,
+            read_reference_offset: self.read_reference_offset,
+            read_block_count: self.read_block_count,
+            read_blocks: self.read_blocks,
+            read_interval_count: self.read_interval_count,
+            read_interval_start: self.read_interval_start,
+            read_interval_len: self.read_interval_len,
+            read_first_residual: self.read_first_residual,
+            read_residual: self.read_residual,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<E: Endianness, F: BitReaderFactory<E>, OFF: IndexedSeq<Input = usize, Output = usize>>
+    DynCodesDecoderFactory<E, F, OFF>
+where
     for<'a> <F as BitReaderFactory<E>>::BitReader<'a>: CodeRead<E>,
 {
     // Const cached functions we use to decode the data. These could be general
