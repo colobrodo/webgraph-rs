@@ -1,3 +1,4 @@
+
 [package]
 name = "webgraph"
 version = "0.1.4"
@@ -54,7 +55,7 @@ predicates = "3.1.2"
 sysinfo = "0.30.13"
 
 # for zuckerli benchmarks
-webgraph_rust = { git = "https://github.com/caba5/WebGraph.git" }
+webgraph_rust = { git = "https://github.com/colobrodo/WebGraph.git" }
 cap = "0.1.2"
 
 [build-dependencies]
