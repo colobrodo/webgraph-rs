@@ -423,7 +423,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         )?;
         // consistency check
         debug_assert_eq!(written_bits, min_bits);
-        // assert_eq!(self.references.len(), self.curr_node - self.start_node);
+        assert_eq!(self.references.len(), self.curr_node - self.start_node);
         self.references.push(ref_delta);
         // update the current node
         self.curr_node += 1;
