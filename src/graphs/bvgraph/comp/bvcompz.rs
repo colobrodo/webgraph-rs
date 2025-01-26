@@ -21,15 +21,12 @@ pub struct BvCompZ<E> {
     /// The ring-buffer that stores the neighbours of the last
     /// `compression_window` neighbours
     backrefs: CircularBuffer<Vec<usize>>,
+    // TODO: remove the pub used for debug
     /// The references to the adjecency list to copy
     pub references: Vec<usize>,
+    // TODO: remove the pub used for debug
     /// Stimated costs in saved bits using the current reference selection versus the extensive list   
     pub saved_costs: Vec<f32>,
-    /// The ring-buffer that stores how many recursion steps are needed to
-    /// decode the last `compression_window` nodes, this is used for
-    /// `max_ref_count` which is used to modulate the compression / decoding
-    /// speed tradeoff
-    //ref_counts: CircularBuffer<usize>,
     /// The bitstream writer, this implements the mock function so we can
     /// do multiple tentative compressions and use the real one once we figured
     /// out how to compress the graph best
@@ -464,7 +461,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         Ok(count)
     }
 
-    pub fn update_references_for_max_lenght(&mut self, max_length: usize) {
+    pub fn update_references_for_max_lenght(&mut self) {
         debug_assert!(self.saved_costs.len() == self.references.len());
         for i in 0..self.references.len() {
             debug_assert!(self.references[i] <= i);
@@ -497,8 +494,10 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         // is not part of a path longer than i (from 0 to max_lenght)
         // so using dyn[node * (max_length + 1) + max_length] denotes the weight where
         // we are considering the node to be the root
-        let mut dyn_table =
-            vec![vec![ReferenceTableEntry::default(); max_length + 1]; self.references.len()];
+        let mut dyn_table = vec![
+            vec![ReferenceTableEntry::default(); self.max_ref_count + 1];
+            self.references.len()
+        ];
 
         // TODO: check this.
         for i in (0..self.references.len()).rev() {
@@ -506,7 +505,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             // and favor the children so they can be the end of full (max_lenght) reference chains
             let mut child_sum_full_chain = 0.0;
             for &child in out_edges[i].iter() {
-                child_sum_full_chain += dyn_table[child][max_length].saved_cost;
+                child_sum_full_chain += dyn_table[child][self.max_ref_count].saved_cost;
             }
 
             dyn_table[i][0] = ReferenceTableEntry {
@@ -515,7 +514,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             };
 
             // counting parent link, if any.
-            for links_to_use in 1..=max_length {
+            for links_to_use in 1..=self.max_ref_count {
                 // Now we are choosing i to have at most children chains of 'links_to_use'
                 // (because we used 'max_length - links_to_use' links before somewhere)
                 let mut child_sum = self.saved_costs[i];
@@ -537,7 +536,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             }
         }
 
-        let mut available_length = vec![max_length; self.references.len()];
+        let mut available_length = vec![self.max_ref_count; self.references.len()];
         has_ref = 0;
         // always choose the maximum available lengths calculated in the previous step
         for i in 0..self.references.len() {
@@ -767,7 +766,7 @@ mod test {
         );
 
         bvcomp.extend(&seq_graph).unwrap();
-        bvcomp.update_references_for_max_lenght(max_ref_count);
+        bvcomp.update_references_for_max_lenght();
         bvcomp.flush()?;
 
         // Read it back
