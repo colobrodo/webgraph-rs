@@ -17,6 +17,8 @@ pub struct BvCompZ<E> {
     backrefs: CircularBuffer<Vec<usize>>,
     /// The references to the adjecency list to copy
     references: Vec<usize>,
+    /// Stimated costs in saved bits using the current reference selection versus the extensive list   
+    saved_costs: Vec<f32>,
     /// The ring-buffer that stores how many recursion steps are needed to
     /// decode the last `compression_window` nodes, this is used for
     /// `max_ref_count` which is used to modulate the compression / decoding
@@ -320,6 +322,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         BvCompZ {
             backrefs: CircularBuffer::new(compression_window + 1),
             references: Vec::new(),
+            saved_costs: Vec::new(),
             // ref_counts: CircularBuffer::new(compression_window + 1),
             encoder,
             min_interval_length,
@@ -364,12 +367,13 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             )?;
             // update the current node
             self.references.push(0);
+            self.saved_costs.push(0.0);
             self.curr_node += 1;
             return Ok(written_bits);
         }
         // The delta of the best reference, by default 0 which is no compression
         let mut ref_delta = 0;
-        let mut min_bits = {
+        let cost = {
             let mut estimator = self.encoder.estimator();
             // Write the compressed data
             compressor.write(
@@ -379,6 +383,8 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 self.min_interval_length,
             )?
         };
+        let mut saved_cost = 0;
+        let mut min_bits = cost;
 
         let deltas = 1 + self
             .compression_window
@@ -409,6 +415,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             // keep track of the best, it's strictly less so we keep the
             // nearest one in the case of multiple equal ones
             if bits < min_bits {
+                saved_cost = cost - bits;
                 min_bits = bits;
                 ref_delta = delta;
             }
@@ -424,6 +431,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         // consistency check
         debug_assert_eq!(written_bits, min_bits);
         assert_eq!(self.references.len(), self.curr_node - self.start_node);
+        self.saved_costs.push(saved_cost as f32);
         self.references.push(ref_delta);
         // update the current node
         self.curr_node += 1;
@@ -448,6 +456,91 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         // WAS
         // iter_nodes.for_each(|(_, succ)| self.push(succ)).sum()
         Ok(count)
+    }
+
+    pub fn update_references_for_max_lenght(&mut self, max_length: usize) {
+        debug_assert!(self.saved_costs.len() == self.references.len());
+        let N = self.references.len();
+        for i in 0..N {
+            debug_assert!(self.references[i] <= i);
+            debug_assert!(self.saved_costs[i] >= 0.0);
+            if self.references[i] == 0 {
+                debug_assert!(self.saved_costs[i] == 0.0);
+            }
+        }
+        let mut has_ref = 0;
+        for &reference in self.references.iter() {
+            if reference != 0 {
+                has_ref += 1;
+            }
+        }
+        eprintln!("has ref pre: {}", has_ref);
+        let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); N];
+        for i in 0..N {
+            // 0 <= references[i] <= windows_size
+            if self.references[i] != 0 {
+                // for each j in out_edges, for each i in out_edges[j]: j + window_size >= i
+                // circular buffer for the table but later we iterate in reverse order so we should always
+                // keep at least the references list
+                out_edges[i - self.references[i]].push(i);
+            }
+        }
+        // table for dynamic programming: the maximum weight of the subforest rooted in x
+        // that has no paths longer than max_lenght and where the root x
+        // is not part of a path longer than i (from 0 to max_lenght)
+        // so using dyn[node * (max_length + 1) + max_length] denotes the weight where
+        // we are considering the node to be the root
+        let mut dyn_table = vec![0f32; N * (max_length + 1)];
+        let mut choice = vec![false; N * (max_length + 1)];
+
+        // TODO: check this.
+        for i in (0..N).rev() {
+            // in the paper M_r(i) so the case where I don't choose this node to be referred from other lists
+            // and favor the children so they can be the end of full (max_lenght) reference chains
+            let mut child_sum_full_chain = 0.0;
+            for &child in out_edges[i].iter() {
+                child_sum_full_chain += dyn_table[child * (max_length + 1) + max_length];
+            }
+
+            choice[i * (max_length + 1)] = false;
+            dyn_table[i * (max_length + 1)] = child_sum_full_chain;
+
+            // counting parent link, if any.
+            for links_to_use in 1..=max_length {
+                // Now we are choosing i to have at most children chains of 'links_to_use'
+                // (because we used 'max_length - links_to_use' links before somewhere)
+                let mut child_sum = self.saved_costs[i];
+                // Take it.
+                for &child in out_edges[i].iter() {
+                    child_sum += dyn_table[child * (max_length + 1) + links_to_use - 1];
+                }
+                if child_sum > child_sum_full_chain {
+                    choice[i * (max_length + 1) + links_to_use] = true;
+                    dyn_table[i * (max_length + 1) + links_to_use] = child_sum;
+                } else {
+                    choice[i * (max_length + 1) + links_to_use] = false;
+                    dyn_table[i * (max_length + 1) + links_to_use] = child_sum_full_chain;
+                }
+            }
+        }
+
+        let mut available_length = vec![max_length; N];
+        has_ref = 0;
+        for i in 0..N {
+            if choice[i * (max_length + 1) + available_length[i]] {
+                // Taken: push available_length.
+                for &child in out_edges[i].iter() {
+                    available_length[child] = available_length[i] - 1;
+                }
+            } else {
+                // Not taken: remove reference.
+                self.references[i] = 0;
+            }
+            if self.references[i] != 0 {
+                has_ref += 1;
+            }
+        }
+        eprintln!("has ref post: {}\n", has_ref);
     }
 
     /// Consume the compressor return the number of bits written by
@@ -650,9 +743,22 @@ mod test {
 
         let codes_writer = <ConstCodesEncoder<LE, _>>::new(bit_write);
 
-        let mut bvcomp = BvCompZ::new(codes_writer, compression_window, 3, min_interval_length, 0);
+        let max_ref_count = 3;
+        let mut bvcomp = BvCompZ::new(
+            codes_writer,
+            compression_window,
+            max_ref_count,
+            min_interval_length,
+            0,
+        );
 
         bvcomp.extend(&seq_graph).unwrap();
+        bvcomp.update_references_for_max_lenght(max_ref_count);
+        let mut i = 0;
+        for (&reference, cost) in bvcomp.references.iter().zip(bvcomp.saved_costs.iter()) {
+            println!("{} {}: {}", i, reference, cost);
+            i += 1;
+        }
         bvcomp.flush()?;
 
         // Read it back
