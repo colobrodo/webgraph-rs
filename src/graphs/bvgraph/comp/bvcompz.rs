@@ -9,6 +9,12 @@ use crate::prelude::*;
 use core::cmp::Ordering;
 use lender::prelude::*;
 
+#[derive(Default, Clone)]
+struct ReferenceTableEntry {
+    saved_cost: f32,
+    choosen: bool,
+}
+
 /// A BvGraph compressor, this is used to compress a graph into a BvGraph
 #[derive(Debug, Clone)]
 pub struct BvCompZ<E> {
@@ -16,9 +22,9 @@ pub struct BvCompZ<E> {
     /// `compression_window` neighbours
     backrefs: CircularBuffer<Vec<usize>>,
     /// The references to the adjecency list to copy
-    references: Vec<usize>,
+    pub references: Vec<usize>,
     /// Stimated costs in saved bits using the current reference selection versus the extensive list   
-    saved_costs: Vec<f32>,
+    pub saved_costs: Vec<f32>,
     /// The ring-buffer that stores how many recursion steps are needed to
     /// decode the last `compression_window` nodes, this is used for
     /// `max_ref_count` which is used to modulate the compression / decoding
@@ -460,14 +466,14 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
 
     pub fn update_references_for_max_lenght(&mut self, max_length: usize) {
         debug_assert!(self.saved_costs.len() == self.references.len());
-        let N = self.references.len();
-        for i in 0..N {
+        for i in 0..self.references.len() {
             debug_assert!(self.references[i] <= i);
             debug_assert!(self.saved_costs[i] >= 0.0);
             if self.references[i] == 0 {
                 debug_assert!(self.saved_costs[i] == 0.0);
             }
         }
+        // counting refs
         let mut has_ref = 0;
         for &reference in self.references.iter() {
             if reference != 0 {
@@ -475,14 +481,15 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             }
         }
         eprintln!("has ref pre: {}", has_ref);
-        let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); N];
-        for i in 0..N {
+        // dag of nodes that points to the i-th element of the vector
+        let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); self.references.len()];
+        for (i, &reference) in self.references.iter().enumerate() {
             // 0 <= references[i] <= windows_size
-            if self.references[i] != 0 {
+            if reference != 0 {
                 // for each j in out_edges, for each i in out_edges[j]: j + window_size >= i
                 // circular buffer for the table but later we iterate in reverse order so we should always
                 // keep at least the references list
-                out_edges[i - self.references[i]].push(i);
+                out_edges[i - reference].push(i);
             }
         }
         // table for dynamic programming: the maximum weight of the subforest rooted in x
@@ -490,20 +497,22 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         // is not part of a path longer than i (from 0 to max_lenght)
         // so using dyn[node * (max_length + 1) + max_length] denotes the weight where
         // we are considering the node to be the root
-        let mut dyn_table = vec![0f32; N * (max_length + 1)];
-        let mut choice = vec![false; N * (max_length + 1)];
+        let mut dyn_table =
+            vec![vec![ReferenceTableEntry::default(); max_length + 1]; self.references.len()];
 
         // TODO: check this.
-        for i in (0..N).rev() {
+        for i in (0..self.references.len()).rev() {
             // in the paper M_r(i) so the case where I don't choose this node to be referred from other lists
             // and favor the children so they can be the end of full (max_lenght) reference chains
             let mut child_sum_full_chain = 0.0;
             for &child in out_edges[i].iter() {
-                child_sum_full_chain += dyn_table[child * (max_length + 1) + max_length];
+                child_sum_full_chain += dyn_table[child][max_length].saved_cost;
             }
 
-            choice[i * (max_length + 1)] = false;
-            dyn_table[i * (max_length + 1)] = child_sum_full_chain;
+            dyn_table[i][0] = ReferenceTableEntry {
+                saved_cost: child_sum_full_chain,
+                choosen: false,
+            };
 
             // counting parent link, if any.
             for links_to_use in 1..=max_length {
@@ -512,22 +521,27 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 let mut child_sum = self.saved_costs[i];
                 // Take it.
                 for &child in out_edges[i].iter() {
-                    child_sum += dyn_table[child * (max_length + 1) + links_to_use - 1];
+                    child_sum += dyn_table[child][links_to_use - 1].saved_cost;
                 }
-                if child_sum > child_sum_full_chain {
-                    choice[i * (max_length + 1) + links_to_use] = true;
-                    dyn_table[i * (max_length + 1) + links_to_use] = child_sum;
+                dyn_table[i][links_to_use] = if child_sum > child_sum_full_chain {
+                    ReferenceTableEntry {
+                        saved_cost: child_sum,
+                        choosen: true,
+                    }
                 } else {
-                    choice[i * (max_length + 1) + links_to_use] = false;
-                    dyn_table[i * (max_length + 1) + links_to_use] = child_sum_full_chain;
-                }
+                    ReferenceTableEntry {
+                        saved_cost: child_sum_full_chain,
+                        choosen: false,
+                    }
+                };
             }
         }
 
-        let mut available_length = vec![max_length; N];
+        let mut available_length = vec![max_length; self.references.len()];
         has_ref = 0;
-        for i in 0..N {
-            if choice[i * (max_length + 1) + available_length[i]] {
+        // always choose the maximum available lengths calculated in the previous step
+        for i in 0..self.references.len() {
+            if dyn_table[i][available_length[i]].choosen {
                 // Taken: push available_length.
                 for &child in out_edges[i].iter() {
                     available_length[child] = available_length[i] - 1;
@@ -754,11 +768,6 @@ mod test {
 
         bvcomp.extend(&seq_graph).unwrap();
         bvcomp.update_references_for_max_lenght(max_ref_count);
-        let mut i = 0;
-        for (&reference, cost) in bvcomp.references.iter().zip(bvcomp.saved_costs.iter()) {
-            println!("{} {}: {}", i, reference, cost);
-            i += 1;
-        }
         bvcomp.flush()?;
 
         // Read it back
