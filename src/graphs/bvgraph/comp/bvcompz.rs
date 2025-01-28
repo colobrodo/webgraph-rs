@@ -464,6 +464,10 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         // TODO: complete zuckerli algorithm using greedy selection of the nodes
         // iterate over all the backrefs and write them
         let n = self.references.len();
+        assert_eq!(
+            self.references.len(),
+            self.curr_node - self.start_chunk_node
+        );
         assert_eq!(self.start_chunk_node, self.curr_node - n);
         let mut written_bits = 0;
         for i in 0..n {
