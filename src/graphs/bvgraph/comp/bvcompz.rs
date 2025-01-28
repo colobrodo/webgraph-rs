@@ -27,6 +27,10 @@ pub struct BvCompZ<E> {
     // TODO: remove the pub used for debug
     /// Stimated costs in saved bits using the current reference selection versus the extensive list   
     pub saved_costs: Vec<f32>,
+    /// The number of nodes for which the reference selection algorithm is executed.
+    /// Used in the dynamic algorithm to manage the tradeoff between memory consumption
+    /// and space gained in compression.
+    chunk_size: usize,
     /// The bitstream writer, this implements the mock function so we can
     /// do multiple tentative compressions and use the real one once we figured
     /// out how to compress the graph best
@@ -42,9 +46,8 @@ pub struct BvCompZ<E> {
     min_interval_length: usize,
     /// The current node we are compressing
     curr_node: usize,
-    /// The first node we are compressing, this is needed because during
-    /// parallel compression we need to work on different chunks
-    start_node: usize,
+    /// The first node of the chunck in which the nodes' references are calculated together
+    start_chunk_node: usize,
     /// The number of arcs compressed so far
     pub arcs: u64,
 }
@@ -318,24 +321,23 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
     pub fn new(
         encoder: E,
         compression_window: usize,
+        chunk_size: usize,
         max_ref_count: usize,
         min_interval_length: usize,
         start_node: usize,
     ) -> Self {
         BvCompZ {
-            backrefs: CircularBuffer::new(compression_window + 1),
-            references: Vec::new(),
-            saved_costs: Vec::new(),
-            // ref_counts: CircularBuffer::new(compression_window + 1),
+            backrefs: CircularBuffer::new(chunk_size + 1),
+            references: Vec::with_capacity(chunk_size + 1),
+            saved_costs: Vec::with_capacity(chunk_size + 1),
+            chunk_size,
             encoder,
             min_interval_length,
             compression_window,
             max_ref_count,
-            start_node,
+            start_chunk_node: start_node,
             curr_node: start_node,
-            compressors: (0..compression_window + 1)
-                .map(|_| Compressor::new())
-                .collect(),
+            compressors: (0..chunk_size + 1).map(|_| Compressor::new()).collect(),
             arcs: 0,
         }
     }
@@ -369,8 +371,6 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 self.min_interval_length,
             )?;
             // update the current node
-            self.references.push(0);
-            self.saved_costs.push(0.0);
             self.curr_node += 1;
             return Ok(written_bits);
         }
@@ -391,7 +391,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
 
         let deltas = 1 + self
             .compression_window
-            .min(self.curr_node - self.start_node);
+            .min(self.curr_node - self.start_chunk_node);
         // compression windows is not zero, so compress the current node
         for delta in 1..deltas {
             let ref_node = self.curr_node - delta;
@@ -423,21 +423,19 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 ref_delta = delta;
             }
         }
-        // write the best result reusing the precomputed compression
-        let compressor = &mut self.compressors[ref_delta];
-        let written_bits = compressor.write(
-            &mut self.encoder,
-            self.curr_node,
-            Some(ref_delta),
-            self.min_interval_length,
-        )?;
         // consistency check
-        debug_assert_eq!(written_bits, min_bits);
-        assert_eq!(self.references.len(), self.curr_node - self.start_node);
+        assert_eq!(
+            self.references.len(),
+            self.curr_node - self.start_chunk_node
+        );
         self.saved_costs.push(saved_cost as f32);
         self.references.push(ref_delta);
         // update the current node
+        let mut written_bits = 0;
         self.curr_node += 1;
+        if self.references.len() >= self.chunk_size {
+            written_bits = self.calculate_reference_selection()?;
+        }
         Ok(written_bits)
     }
 
@@ -461,7 +459,42 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         Ok(count)
     }
 
+    fn calculate_reference_selection(&mut self) -> anyhow::Result<u64> {
+        self.update_references_for_max_lenght();
+        // TODO: complete zuckerli algorithm using greedy selection of the nodes
+        // iterate over all the backrefs and write them
+        let n = self.references.len();
+        assert_eq!(self.start_chunk_node, self.curr_node - n);
+        let mut written_bits = 0;
+        for i in 0..n {
+            let node_index = self.curr_node - n + i;
+            let curr_list = &self.backrefs[node_index];
+            let reference = self.references[i];
+            let ref_list = if reference == 0 {
+                None
+            } else {
+                let reference_index = node_index - reference;
+                Some(self.backrefs[reference_index].as_slice()).filter(|list| !list.is_empty())
+            };
+            let compressor = &mut self.compressors[i];
+            compressor.compress(curr_list, ref_list, self.min_interval_length)?;
+            written_bits += compressor.write(
+                &mut self.encoder,
+                node_index,
+                Some(reference),
+                self.min_interval_length,
+            )?;
+        }
+        // reset the chunk starting point
+        self.start_chunk_node = self.curr_node;
+        // clear the refs array and the backrefs
+        self.references.clear();
+        self.saved_costs.clear();
+        Ok(written_bits)
+    }
+
     pub fn update_references_for_max_lenght(&mut self) {
+        // consistency checks
         debug_assert!(self.saved_costs.len() == self.references.len());
         for i in 0..self.references.len() {
             debug_assert!(self.references[i] <= i);
@@ -470,14 +503,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 debug_assert!(self.saved_costs[i] == 0.0);
             }
         }
-        // counting refs
-        let mut has_ref = 0;
-        for &reference in self.references.iter() {
-            if reference != 0 {
-                has_ref += 1;
-            }
-        }
-        eprintln!("has ref pre: {}", has_ref);
+
         // dag of nodes that points to the i-th element of the vector
         let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); self.references.len()];
         for (i, &reference) in self.references.iter().enumerate() {
@@ -492,8 +518,8 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         // table for dynamic programming: the maximum weight of the subforest rooted in x
         // that has no paths longer than max_lenght and where the root x
         // is not part of a path longer than i (from 0 to max_lenght)
-        // so using dyn[node * (max_length + 1) + max_length] denotes the weight where
-        // we are considering the node to be the root
+        // so using dyn[node][max_length] denotes the weight where
+        // we are considering node to be the root
         let mut dyn_table = vec![
             vec![ReferenceTableEntry::default(); self.max_ref_count + 1];
             self.references.len()
@@ -537,7 +563,6 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         }
 
         let mut available_length = vec![self.max_ref_count; self.references.len()];
-        has_ref = 0;
         // always choose the maximum available lengths calculated in the previous step
         for i in 0..self.references.len() {
             if dyn_table[i][available_length[i]].choosen {
@@ -549,17 +574,16 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 // Not taken: remove reference.
                 self.references[i] = 0;
             }
-            if self.references[i] != 0 {
-                has_ref += 1;
-            }
         }
-        eprintln!("has ref post: {}\n", has_ref);
     }
 
     /// Consume the compressor return the number of bits written by
     /// flushing the encoder (0 for instantaneous codes)
     pub fn flush(mut self) -> Result<usize, E::Error> {
-        self.encoder.flush()
+        // TODO: convert anyhow error
+        let remaining_chunck_bits = self.calculate_reference_selection().unwrap();
+        let flushed = self.encoder.flush()?;
+        Ok(remaining_chunck_bits as usize + flushed)
     }
 }
 
@@ -699,7 +723,14 @@ mod test {
         //);
         let codes_writer = <ConstCodesEncoder<BE, _>>::new(bit_write);
 
-        let mut bvcomp = BvCompZ::new(codes_writer, compression_window, 3, min_interval_length, 0);
+        let mut bvcomp = BvCompZ::new(
+            codes_writer,
+            compression_window,
+            1000,
+            3,
+            min_interval_length,
+            0,
+        );
 
         bvcomp.extend(&seq_graph).unwrap();
         bvcomp.flush()?;
@@ -760,13 +791,13 @@ mod test {
         let mut bvcomp = BvCompZ::new(
             codes_writer,
             compression_window,
+            10000,
             max_ref_count,
             min_interval_length,
             0,
         );
 
         bvcomp.extend(&seq_graph).unwrap();
-        bvcomp.update_references_for_max_lenght();
         bvcomp.flush()?;
 
         // Read it back
