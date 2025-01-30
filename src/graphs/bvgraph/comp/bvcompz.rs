@@ -585,7 +585,11 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
     /// flushing the encoder (0 for instantaneous codes)
     pub fn flush(mut self) -> Result<usize, E::Error> {
         // TODO: convert anyhow error
-        let remaining_chunck_bits = self.calculate_reference_selection().unwrap();
+        let remaining_chunck_bits = if self.compression_window > 0 {
+            self.calculate_reference_selection().unwrap()
+        } else {
+            0
+        };
         let flushed = self.encoder.flush()?;
         Ok(remaining_chunck_bits as usize + flushed)
     }
