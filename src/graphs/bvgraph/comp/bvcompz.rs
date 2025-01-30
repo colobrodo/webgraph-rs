@@ -6,6 +6,7 @@
  */
 
 use crate::prelude::*;
+use common_traits::Sequence;
 use core::cmp::Ordering;
 use lender::prelude::*;
 
@@ -460,15 +461,96 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
     }
 
     fn calculate_reference_selection(&mut self) -> anyhow::Result<u64> {
+        let n = self.references.len();
         self.update_references_for_max_lenght();
+        assert_eq!(n, self.curr_node - self.start_chunk_node);
+        assert_eq!(self.start_chunk_node, self.curr_node - n);
+
         // TODO: complete zuckerli algorithm using greedy selection of the nodes
         // iterate over all the backrefs and write them
-        let n = self.references.len();
-        assert_eq!(
-            self.references.len(),
-            self.curr_node - self.start_chunk_node
-        );
-        assert_eq!(self.start_chunk_node, self.curr_node - n);
+        // calculate length of previous references' chains
+        let mut chain_length = vec![0usize; self.chunk_size];
+        for i in 0..n {
+            if self.references[i] != 0 {
+                let parent = i - self.references[i];
+                chain_length[i] = chain_length[parent] + 1;
+            }
+        }
+        // calculate the length of nexts reference chain
+        let mut forward_chain_length = vec![0usize; self.chunk_size];
+        for i in (0..n).rev() {
+            if self.references[i] != 0 {
+                // check if the subsequent length of my chain is greater than the one of
+                // other children of my parent
+                let parent = i - self.references[i];
+                forward_chain_length[parent] =
+                    forward_chain_length[parent].max(forward_chain_length[i] + 1);
+            }
+        }
+        for i in 0..n {
+            let node_index = self.curr_node - n + i;
+            // recalculate the chain lenght because the reference can be changed
+            // after a greedy re-add in a previouse iteration
+            if self.references[i] != 0 {
+                let parent = i - self.references[i];
+                chain_length[i] = chain_length[parent] + 1;
+            }
+            let curr_list = &self.backrefs[node_index];
+            // first try to compress the current node without references
+            let compressor = &mut self.compressors[i];
+            // Compute how we would compress this
+            compressor.compress(curr_list, None, self.min_interval_length)?;
+            let mut min_bits = {
+                let mut estimator = self.encoder.estimator();
+                // Write the compressed data
+                compressor.write(
+                    &mut estimator,
+                    node_index,
+                    Some(0),
+                    self.min_interval_length,
+                )?
+            };
+
+            let deltas = 1 + self.compression_window.min(i);
+            // compression windows is not zero, so compress the current node
+            for delta in 1..deltas {
+                if chain_length[i - delta] + forward_chain_length[i] + 1 > self.max_ref_count {
+                    continue;
+                }
+                let reference_index = node_index - delta;
+                // Get the neighbours of this previous len_zetanode
+                let ref_list = &self.backrefs[reference_index];
+                // No neighbours, no compression
+                if ref_list.is_empty() {
+                    continue;
+                }
+                // Get its compressor
+                let compressor = &mut self.compressors[i - delta];
+                // Compute how we would compress this
+                compressor.compress(curr_list, Some(ref_list), self.min_interval_length)?;
+                // Compute how many bits it would use, using the mock writer
+                let bits = {
+                    let mut estimator = self.encoder.estimator();
+                    compressor.write(
+                        &mut estimator,
+                        node_index,
+                        Some(delta),
+                        self.min_interval_length,
+                    )?
+                };
+                // keep track of the best, it's strictly less so we keep the
+                // nearest one in the case of multiple equal ones
+                if bits < min_bits {
+                    min_bits = bits;
+                    self.references[i] = delta;
+                }
+            }
+            if self.references[i] != 0 {
+                let parent = i - self.references[i];
+                chain_length[i] = chain_length[parent] + 1;
+            }
+        }
+
         let mut written_bits = 0;
         for i in 0..n {
             let node_index = self.curr_node - n + i;
@@ -510,7 +592,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
 
         // dag of nodes that points to the i-th element of the vector
         let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); self.references.len()];
-        for (i, &reference) in self.references.iter().enumerate() {
+        for (i, reference) in self.references.iter().enumerate() {
             // 0 <= references[i] <= windows_size
             if reference != 0 {
                 // for each j in out_edges, for each i in out_edges[j]: j + window_size >= i
@@ -534,7 +616,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             // in the paper M_r(i) so the case where I don't choose this node to be referred from other lists
             // and favor the children so they can be the end of full (max_lenght) reference chains
             let mut child_sum_full_chain = 0.0;
-            for &child in out_edges[i].iter() {
+            for child in out_edges[i].iter() {
                 child_sum_full_chain += dyn_table[child][self.max_ref_count].saved_cost;
             }
 
@@ -549,7 +631,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 // (because we used 'max_length - links_to_use' links before somewhere)
                 let mut child_sum = self.saved_costs[i];
                 // Take it.
-                for &child in out_edges[i].iter() {
+                for child in out_edges[i].iter() {
                     child_sum += dyn_table[child][links_to_use - 1].saved_cost;
                 }
                 dyn_table[i][links_to_use] = if child_sum > child_sum_full_chain {
@@ -571,7 +653,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         for i in 0..self.references.len() {
             if dyn_table[i][available_length[i]].choosen {
                 // Taken: push available_length.
-                for &child in out_edges[i].iter() {
+                for child in out_edges[i].iter() {
                     available_length[child] = available_length[i] - 1;
                 }
             } else {
