@@ -790,7 +790,7 @@ mod test {
 
     #[test]
     fn test_writer_cnr() -> anyhow::Result<()> {
-        let compression_window = 7;
+        let compression_window = 32;
         let min_interval_length = 4;
 
         let seq_graph = BvGraphSeq::with_basename("tests/data/cnr-2000")
@@ -798,7 +798,7 @@ mod test {
             .load()?;
 
         // Compress the graph
-        let file_path = "tests/data/cnr-2000.bvcomp";
+        let file_path = "tests/data/cnr-2000.bvcompz";
         let bit_write = <BufBitWriter<BE, _>>::new(<WordAdapter<usize, _>>::new(BufWriter::new(
             File::create(file_path)?,
         )));
@@ -807,10 +807,6 @@ mod test {
             ..Default::default()
         };
 
-        //let codes_writer = DynamicCodesWriter::new(
-        //    bit_write,
-        //    &comp_flags,
-        //);
         let codes_writer = <ConstCodesEncoder<BE, _>>::new(bit_write);
 
         let mut bvcomp = BvCompZ::new(
