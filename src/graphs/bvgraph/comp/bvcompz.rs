@@ -5,29 +5,35 @@
  * SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
  */
 
+use super::bvcomp::Compressor;
 use crate::prelude::*;
 use common_traits::Sequence;
-use core::cmp::Ordering;
 use lender::prelude::*;
 
+/// An Entry for the table used to save the intermediate computation
+/// of the dynamic algorithm to select the best references.
+/// It represents if a reference to a node, with a know amount of previous
+/// references chain length, is choosen and how much less it costs to all his
+/// referent with respect to compress the node without any selected reference.
 #[derive(Default, Clone)]
 struct ReferenceTableEntry {
     saved_cost: f32,
     choosen: bool,
 }
 
-/// A BvGraph compressor, this is used to compress a graph into a BvGraph
+/// A BvGraph compressor based on the approximation algorithm described in Zuckerli,
+/// which is used to compress a graph into a BvGraph.   
+/// This compressor uses a dynamic algorithm to find the best references and his
+/// memory usage and precision can be traded off using the `chunk_size`.
 #[derive(Debug, Clone)]
 pub struct BvCompZ<E> {
     /// The ring-buffer that stores the neighbours of the last
     /// `compression_window` neighbours
     backrefs: CircularBuffer<Vec<usize>>,
-    // TODO: remove the pub used for debug
     /// The references to the adjecency list to copy
-    pub references: Vec<usize>,
-    // TODO: remove the pub used for debug
+    references: Vec<usize>,
     /// Stimated costs in saved bits using the current reference selection versus the extensive list   
-    pub saved_costs: Vec<f32>,
+    saved_costs: Vec<f32>,
     /// The number of nodes for which the reference selection algorithm is executed.
     /// Used in the dynamic algorithm to manage the tradeoff between memory consumption
     /// and space gained in compression.
@@ -51,267 +57,6 @@ pub struct BvCompZ<E> {
     start_chunk_node: usize,
     /// The number of arcs compressed so far
     pub arcs: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Compute how to encode the successors of a node, given a reference node.
-/// This could be a function, but we made it a struct so we can reuse the
-/// allocations for performance reasons
-struct Compressor {
-    /// The outdegree of the node we are compressing
-    outdegree: usize,
-    /// The blocks of nodes we are copying from the reference node
-    blocks: Vec<usize>,
-    /// The non-copied nodes
-    extra_nodes: Vec<usize>,
-    /// The starts of the intervals
-    left_interval: Vec<usize>,
-    /// The lengths of the intervls
-    len_interval: Vec<usize>,
-    /// The nodes left to encode as gaps
-    residuals: Vec<usize>,
-}
-
-impl Compressor {
-    /// Constant used only to make the code more readable.
-    /// When min_interval_length is 0, we don't use intervals, which might be
-    /// counter-intuitive
-    const NO_INTERVALS: usize = 0;
-
-    /// Creates a new empty compressor
-    fn new() -> Self {
-        Compressor {
-            outdegree: 0,
-            blocks: Vec::with_capacity(1024),
-            extra_nodes: Vec::with_capacity(1024),
-            left_interval: Vec::with_capacity(1024),
-            len_interval: Vec::with_capacity(1024),
-            residuals: Vec::with_capacity(1024),
-        }
-    }
-
-    /// Writes the current node to the bitstream, this dumps the internal
-    /// buffers which are initialized by calling `compress` so this has to be
-    /// called only after `compress`.
-    ///
-    /// This returns the number of bits written.
-    fn write<E: Encode>(
-        &self,
-        writer: &mut E,
-        curr_node: usize,
-        reference_offset: Option<usize>,
-        min_interval_length: usize,
-    ) -> Result<u64, E::Error> {
-        let mut written_bits: u64 = 0;
-        written_bits += writer.start_node(curr_node)? as u64;
-        // write the outdegree
-        written_bits += writer.write_outdegree(self.outdegree as u64)? as u64;
-        // write the references
-        if self.outdegree != 0 {
-            if let Some(reference_offset) = reference_offset {
-                written_bits += writer.write_reference_offset(reference_offset as u64)? as u64;
-                if reference_offset != 0 {
-                    written_bits += writer.write_block_count(self.blocks.len() as _)? as u64;
-                    if !self.blocks.is_empty() {
-                        for i in 0..self.blocks.len() {
-                            written_bits += writer.write_block((self.blocks[i] - 1) as u64)? as u64;
-                        }
-                    }
-                }
-            }
-        }
-        // write the intervals
-        if !self.extra_nodes.is_empty() && min_interval_length != Self::NO_INTERVALS {
-            written_bits += writer.write_interval_count(self.left_interval.len() as _)? as u64;
-
-            if !self.left_interval.is_empty() {
-                written_bits += writer.write_interval_start(int2nat(
-                    self.left_interval[0] as i64 - curr_node as i64,
-                ))? as u64;
-                written_bits += writer
-                    .write_interval_len((self.len_interval[0] - min_interval_length) as u64)?
-                    as u64;
-                let mut prev = self.left_interval[0] + self.len_interval[0];
-
-                for i in 1..self.left_interval.len() {
-                    written_bits += writer
-                        .write_interval_start((self.left_interval[i] - prev - 1) as u64)?
-                        as u64;
-                    written_bits += writer
-                        .write_interval_len((self.len_interval[i] - min_interval_length) as u64)?
-                        as u64;
-                    prev = self.left_interval[i] + self.len_interval[i];
-                }
-            }
-        }
-        // write the residuals
-        if !self.residuals.is_empty() {
-            written_bits += writer
-                .write_first_residual(int2nat(self.residuals[0] as i64 - curr_node as i64))?
-                as u64;
-
-            for i in 1..self.residuals.len() {
-                written_bits += writer
-                    .write_residual((self.residuals[i] - self.residuals[i - 1] - 1) as u64)?
-                    as u64;
-            }
-        }
-
-        written_bits += writer.end_node(curr_node)? as u64;
-        Ok(written_bits)
-    }
-
-    #[inline(always)]
-    /// Reset the compressor for a new compression
-    fn clear(&mut self) {
-        self.outdegree = 0;
-        self.blocks.clear();
-        self.extra_nodes.clear();
-        self.left_interval.clear();
-        self.len_interval.clear();
-        self.residuals.clear();
-    }
-
-    /// setup the internal buffers for the compression of the given values
-    fn compress(
-        &mut self,
-        curr_list: &[usize],
-        ref_list: Option<&[usize]>,
-        min_interval_length: usize,
-    ) -> anyhow::Result<()> {
-        self.clear();
-        self.outdegree = curr_list.len();
-
-        if self.outdegree != 0 {
-            if let Some(ref_list) = ref_list {
-                self.diff_comp(curr_list, ref_list);
-            } else {
-                self.extra_nodes.extend(curr_list)
-            }
-
-            if !self.extra_nodes.is_empty() {
-                if min_interval_length != Self::NO_INTERVALS {
-                    self.intervalize(min_interval_length);
-                } else {
-                    self.residuals.extend(&self.extra_nodes);
-                }
-            }
-        }
-        debug_assert_eq!(self.left_interval.len(), self.len_interval.len());
-        Ok(())
-    }
-
-    /// Get the extra nodes, compute all the intervals of consecutive nodes
-    /// longer than min_interval_length and put the rest in the residuals
-    fn intervalize(&mut self, min_interval_length: usize) {
-        let vl = self.extra_nodes.len();
-        let mut i = 0;
-
-        while i < vl {
-            let mut j = 0;
-            if i < vl - 1 && self.extra_nodes[i] + 1 == self.extra_nodes[i + 1] {
-                j += 1;
-                while i + j < vl - 1 && self.extra_nodes[i + j] + 1 == self.extra_nodes[i + j + 1] {
-                    j += 1;
-                }
-                j += 1;
-
-                // Now j is the number of integers in the interval.
-                if j >= min_interval_length {
-                    self.left_interval.push(self.extra_nodes[i]);
-                    self.len_interval.push(j);
-                    i += j - 1;
-                }
-            }
-            if j < min_interval_length {
-                self.residuals.push(self.extra_nodes[i]);
-            }
-
-            i += 1;
-        }
-    }
-
-    /// Compute the copy blocks and the ignore blocks.
-    /// The copy blocks are blocks of nodes we will copy from the reference node.
-    fn diff_comp(&mut self, curr_list: &[usize], ref_list: &[usize]) {
-        // j is the index of the next successor of the current node we must examine
-        let mut j = 0;
-        // k is the index of the next successor of the reference node we must examine
-        let mut k = 0;
-        // currBlockLen is the number of entries (in the reference list) we have already copied/ignored (in the current block)
-        let mut curr_block_len = 0;
-        // copying is true iff we are producing a copy block (instead of an ignore block)
-        let mut copying = true;
-
-        while j < curr_list.len() && k < ref_list.len() {
-            // First case: we are currently copying entries from the reference list
-            if copying {
-                match curr_list[j].cmp(&ref_list[k]) {
-                    Ordering::Greater => {
-                        /* If while copying we trespass the current element of the reference list,
-                        we must stop copying. */
-                        self.blocks.push(curr_block_len);
-                        copying = false;
-                        curr_block_len = 0;
-                    }
-                    Ordering::Less => {
-                        /* If while copying we find a non-matching element of the reference list which
-                        is larger than us, we can just add the current element to the extra list
-                        and move on. j gets increased. */
-                        self.extra_nodes.push(curr_list[j]);
-                        j += 1;
-                    }
-                    Ordering::Equal => {
-                        // currList[j] == refList[k]
-                        /* If the current elements of the two lists are equal, we just increase the block length.
-                        both j and k get increased. */
-                        j += 1;
-                        k += 1;
-                        curr_block_len += 1;
-                        // if (forReal) copiedArcs++;
-                    }
-                }
-            } else {
-                match curr_list[j].cmp(&ref_list[k]) {
-                    Ordering::Greater => {
-                        /* If we trespassed the currented element of the reference list, we
-                        increase the block length. k gets increased. */
-                        k += 1;
-                        curr_block_len += 1;
-                    }
-                    Ordering::Less => {
-                        /* If we did not trespass the current element of the reference list, we just
-                        add the current element to the extra list and move on. j gets increased. */
-                        self.extra_nodes.push(curr_list[j]);
-                        j += 1;
-                    }
-                    Ordering::Equal => {
-                        // currList[j] == refList[k]
-                        /* If we found a match we flush the current block and start a new copying phase. */
-                        self.blocks.push(curr_block_len);
-                        copying = true;
-                        curr_block_len = 0;
-                    }
-                }
-            }
-        }
-        /* We do not record the last block. The only case when we have to enqueue the last block's length
-         * is when we were copying and we did not copy up to the end of the reference list.
-         */
-        if copying && k < ref_list.len() {
-            self.blocks.push(curr_block_len);
-        }
-
-        // If there are still missing elements, we add them to the extra list.
-        while j < curr_list.len() {
-            self.extra_nodes.push(curr_list[j]);
-            j += 1;
-        }
-        // add a 1 to the first block so we can uniformly write them later
-        if !self.blocks.is_empty() {
-            self.blocks[0] += 1;
-        }
-    }
 }
 
 impl<E: EncodeAndEstimate> BvCompZ<E> {
@@ -581,8 +326,9 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
 
     pub fn update_references_for_max_lenght(&mut self) {
         // consistency checks
-        debug_assert!(self.saved_costs.len() == self.references.len());
-        for i in 0..self.references.len() {
+        let n = self.references.len();
+        debug_assert!(self.saved_costs.len() == n);
+        for i in 0..n {
             debug_assert!(self.references[i] <= i);
             debug_assert!(self.saved_costs[i] >= 0.0);
             if self.references[i] == 0 {
@@ -591,7 +337,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         }
 
         // dag of nodes that points to the i-th element of the vector
-        let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); self.references.len()];
+        let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); n];
         for (i, reference) in self.references.iter().enumerate() {
             // 0 <= references[i] <= windows_size
             if reference != 0 {
@@ -603,16 +349,12 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         }
         // table for dynamic programming: the maximum weight of the subforest rooted in x
         // that has no paths longer than max_lenght and where the root x
-        // is not part of a path longer than i (from 0 to max_lenght)
+        // is not part of a path longer than i (from 0..max_lenght)
         // so using dyn[node][max_length] denotes the weight where
         // we are considering node to be the root
-        let mut dyn_table = vec![
-            vec![ReferenceTableEntry::default(); self.max_ref_count + 1];
-            self.references.len()
-        ];
+        let mut dyn_table = vec![vec![ReferenceTableEntry::default(); self.max_ref_count + 1]; n];
 
-        // TODO: check this.
-        for i in (0..self.references.len()).rev() {
+        for i in (0..n).rev() {
             // in the paper M_r(i) so the case where I don't choose this node to be referred from other lists
             // and favor the children so they can be the end of full (max_lenght) reference chains
             let mut child_sum_full_chain = 0.0;
@@ -648,7 +390,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             }
         }
 
-        let mut available_length = vec![self.max_ref_count; self.references.len()];
+        let mut available_length = vec![self.max_ref_count; n];
         // always choose the maximum available lengths calculated in the previous step
         for i in 0..self.references.len() {
             if dyn_table[i][available_length[i]].choosen {
@@ -687,82 +429,6 @@ mod test {
     use itertools::Itertools;
     use std::fs::File;
     use std::io::{BufReader, BufWriter};
-
-    #[test]
-    fn test_compressor_no_ref() -> anyhow::Result<()> {
-        let mut compressor = Compressor::new();
-        compressor.compress(&[0, 1, 2, 5, 7, 8, 9], None, 2)?;
-        assert_eq!(
-            compressor,
-            Compressor {
-                outdegree: 7,
-                blocks: vec![],
-                extra_nodes: vec![0, 1, 2, 5, 7, 8, 9],
-                left_interval: vec![0, 7],
-                len_interval: vec![3, 3],
-                residuals: vec![5],
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_compressor1() -> anyhow::Result<()> {
-        let mut compressor = Compressor::new();
-        compressor.compress(&[0, 1, 2, 5, 7, 8, 9], Some(&[0, 1, 2]), 2)?;
-        assert_eq!(
-            compressor,
-            Compressor {
-                outdegree: 7,
-                blocks: vec![],
-                extra_nodes: vec![5, 7, 8, 9],
-                left_interval: vec![7],
-                len_interval: vec![3],
-                residuals: vec![5],
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_compressor2() -> anyhow::Result<()> {
-        let mut compressor = Compressor::new();
-        compressor.compress(&[0, 1, 2, 5, 7, 8, 9], Some(&[0, 1, 2, 100]), 2)?;
-        assert_eq!(
-            compressor,
-            Compressor {
-                outdegree: 7,
-                blocks: vec![4],
-                extra_nodes: vec![5, 7, 8, 9],
-                left_interval: vec![7],
-                len_interval: vec![3],
-                residuals: vec![5],
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_compressor3() -> anyhow::Result<()> {
-        let mut compressor = Compressor::new();
-        compressor.compress(
-            &[0, 1, 2, 5, 7, 8, 9, 100],
-            Some(&[0, 1, 2, 4, 7, 8, 9, 101]),
-            2,
-        )?;
-        assert_eq!(
-            compressor,
-            Compressor {
-                outdegree: 8,
-                blocks: vec![4, 1, 3],
-                extra_nodes: vec![5, 100],
-                left_interval: vec![],
-                len_interval: vec![],
-                residuals: vec![5, 100],
-            }
-        );
-        Ok(())
-    }
 
     #[test]
     fn test_writer_window_zero() -> anyhow::Result<()> {

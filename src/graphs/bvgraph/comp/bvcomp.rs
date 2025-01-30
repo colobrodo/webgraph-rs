@@ -46,7 +46,7 @@ pub struct BvComp<E> {
 /// Compute how to encode the successors of a node, given a reference node.
 /// This could be a function, but we made it a struct so we can reuse the
 /// allocations for performance reasons
-struct Compressor {
+pub(crate) struct Compressor {
     /// The outdegree of the node we are compressing
     outdegree: usize,
     /// The blocks of nodes we are copying from the reference node
@@ -65,10 +65,10 @@ impl Compressor {
     /// Constant used only to make the code more readable.
     /// When min_interval_length is 0, we don't use intervals, which might be
     /// counter-intuitive
-    const NO_INTERVALS: usize = 0;
+    pub(crate) const NO_INTERVALS: usize = 0;
 
     /// Creates a new empty compressor
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Compressor {
             outdegree: 0,
             blocks: Vec::with_capacity(1024),
@@ -84,7 +84,7 @@ impl Compressor {
     /// called only after `compress`.
     ///
     /// This returns the number of bits written.
-    fn write<E: Encode>(
+    pub(crate) fn write<E: Encode>(
         &self,
         writer: &mut E,
         curr_node: usize,
@@ -152,7 +152,7 @@ impl Compressor {
 
     #[inline(always)]
     /// Reset the compressor for a new compression
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.outdegree = 0;
         self.blocks.clear();
         self.extra_nodes.clear();
@@ -162,7 +162,7 @@ impl Compressor {
     }
 
     /// setup the internal buffers for the compression of the given values
-    fn compress(
+    pub(crate) fn compress(
         &mut self,
         curr_list: &[usize],
         ref_list: Option<&[usize]>,
