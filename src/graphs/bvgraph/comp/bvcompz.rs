@@ -8,7 +8,6 @@
 use super::bvcomp::Compressor;
 use crate::prelude::*;
 use common_traits::Sequence;
-use lender::prelude::*;
 
 /// An Entry for the table used to save the intermediate computation
 /// of the dynamic algorithm to select the best references.
@@ -59,40 +58,12 @@ pub struct BvCompZ<E> {
     pub arcs: u64,
 }
 
-impl<E: EncodeAndEstimate> BvCompZ<E> {
-    /// This value for `min_interval_length` implies that no intervalization will be performed.
-    pub const NO_INTERVALS: usize = Compressor::NO_INTERVALS;
-
-    /// Creates a new BvGraph compressor.
-    pub fn new(
-        encoder: E,
-        compression_window: usize,
-        chunk_size: usize,
-        max_ref_count: usize,
-        min_interval_length: usize,
-        start_node: usize,
-    ) -> Self {
-        BvCompZ {
-            backrefs: CircularBuffer::new(chunk_size + 1),
-            references: Vec::with_capacity(chunk_size + 1),
-            saved_costs: Vec::with_capacity(chunk_size + 1),
-            chunk_size,
-            encoder,
-            min_interval_length,
-            compression_window,
-            max_ref_count,
-            start_chunk_node: start_node,
-            curr_node: start_node,
-            compressors: (0..chunk_size + 1).map(|_| Compressor::new()).collect(),
-            arcs: 0,
-        }
-    }
-
+impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
     /// Push a new node to the compressor.
     /// The iterator must yield the successors of the node and the nodes HAVE
     /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
     /// empty iterator)
-    pub fn push<I: IntoIterator<Item = usize>>(&mut self, succ_iter: I) -> anyhow::Result<u64> {
+    fn push<I: IntoIterator<Item = usize>>(&mut self, succ_iter: I) -> anyhow::Result<u64> {
         // collect the iterator inside the backrefs, to reuse the capacity already
         // allocated
         {
@@ -185,24 +156,47 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         Ok(written_bits)
     }
 
-    /// Given an iterator over the nodes successors iterators, push them all.
-    /// The iterator must yield the successors of the node and the nodes HAVE
-    /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
-    /// empty iterator).
-    ///
-    /// This most commonly is called with a reference to a graph.
-    pub fn extend<L>(&mut self, iter_nodes: L) -> anyhow::Result<u64>
-    where
-        L: IntoLender,
-        L::Lender: for<'next> NodeLabelsLender<'next, Label = usize>,
-    {
-        let mut count = 0;
-        for_! ( (_, succ) in iter_nodes {
-            count += self.push(succ.into_iter())?;
-        });
-        // WAS
-        // iter_nodes.for_each(|(_, succ)| self.push(succ)).sum()
-        Ok(count)
+    /// Consume the compressor return the number of bits written by
+    /// flushing the encoder (0 for instantaneous codes)
+    fn flush(mut self) -> Result<usize, E::Error> {
+        // TODO: convert anyhow error
+        let remaining_chunck_bits = if self.compression_window > 0 {
+            self.calculate_reference_selection().unwrap()
+        } else {
+            0
+        };
+        let flushed = self.encoder.flush()?;
+        Ok(remaining_chunck_bits as usize + flushed)
+    }
+}
+
+impl<E: EncodeAndEstimate> BvCompZ<E> {
+    /// This value for `min_interval_length` implies that no intervalization will be performed.
+    pub const NO_INTERVALS: usize = Compressor::NO_INTERVALS;
+
+    /// Creates a new BvGraph compressor.
+    pub fn new(
+        encoder: E,
+        compression_window: usize,
+        chunk_size: usize,
+        max_ref_count: usize,
+        min_interval_length: usize,
+        start_node: usize,
+    ) -> Self {
+        BvCompZ {
+            backrefs: CircularBuffer::new(chunk_size + 1),
+            references: Vec::with_capacity(chunk_size + 1),
+            saved_costs: Vec::with_capacity(chunk_size + 1),
+            chunk_size,
+            encoder,
+            min_interval_length,
+            compression_window,
+            max_ref_count,
+            start_chunk_node: start_node,
+            curr_node: start_node,
+            compressors: (0..chunk_size + 1).map(|_| Compressor::new()).collect(),
+            arcs: 0,
+        }
     }
 
     fn calculate_reference_selection(&mut self) -> anyhow::Result<u64> {
@@ -404,19 +398,6 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             }
         }
     }
-
-    /// Consume the compressor return the number of bits written by
-    /// flushing the encoder (0 for instantaneous codes)
-    pub fn flush(mut self) -> Result<usize, E::Error> {
-        // TODO: convert anyhow error
-        let remaining_chunck_bits = if self.compression_window > 0 {
-            self.calculate_reference_selection().unwrap()
-        } else {
-            0
-        };
-        let flushed = self.encoder.flush()?;
-        Ok(remaining_chunck_bits as usize + flushed)
-    }
 }
 
 #[cfg(test)]
@@ -427,6 +408,7 @@ mod test {
     use super::*;
     use dsi_bitstream::prelude::*;
     use itertools::Itertools;
+    use lender::prelude::*;
     use std::fs::File;
     use std::io::{BufReader, BufWriter};
 

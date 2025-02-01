@@ -9,6 +9,31 @@ use crate::prelude::*;
 use core::cmp::Ordering;
 use lender::prelude::*;
 
+pub trait GraphCompressor<E: EncodeAndEstimate> {
+    fn push<I: IntoIterator<Item = usize>>(&mut self, succ_iter: I) -> anyhow::Result<u64>;
+    fn flush(self) -> Result<usize, E::Error>;
+
+    /// Given an iterator over the nodes successors iterators, push them all.
+    /// The iterator must yield the successors of the node and the nodes HAVE
+    /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
+    /// empty iterator).
+    ///
+    /// This most commonly is called with a reference to a graph.
+    fn extend<L>(&mut self, iter_nodes: L) -> anyhow::Result<u64>
+    where
+        L: IntoLender,
+        L::Lender: for<'next> NodeLabelsLender<'next, Label = usize>,
+    {
+        let mut count = 0;
+        for_! ( (_, succ) in iter_nodes {
+            count += self.push(succ.into_iter())?;
+        });
+        // WAS
+        // iter_nodes.for_each(|(_, succ)| self.push(succ)).sum()
+        Ok(count)
+    }
+}
+
 /// A BvGraph compressor, this is used to compress a graph into a BvGraph
 #[derive(Debug, Clone)]
 pub struct BvComp<E> {
@@ -303,39 +328,12 @@ impl Compressor {
     }
 }
 
-impl<E: EncodeAndEstimate> BvComp<E> {
-    /// This value for `min_interval_length` implies that no intervalization will be performed.
-    pub const NO_INTERVALS: usize = Compressor::NO_INTERVALS;
-
-    /// Creates a new BvGraph compressor.
-    pub fn new(
-        encoder: E,
-        compression_window: usize,
-        max_ref_count: usize,
-        min_interval_length: usize,
-        start_node: usize,
-    ) -> Self {
-        BvComp {
-            backrefs: CircularBuffer::new(compression_window + 1),
-            ref_counts: CircularBuffer::new(compression_window + 1),
-            encoder,
-            min_interval_length,
-            compression_window,
-            max_ref_count,
-            start_node,
-            curr_node: start_node,
-            compressors: (0..compression_window + 1)
-                .map(|_| Compressor::new())
-                .collect(),
-            arcs: 0,
-        }
-    }
-
+impl<E: EncodeAndEstimate> GraphCompressor<E> for BvComp<E> {
     /// Push a new node to the compressor.
     /// The iterator must yield the successors of the node and the nodes HAVE
     /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
     /// empty iterator)
-    pub fn push<I: IntoIterator<Item = usize>>(&mut self, succ_iter: I) -> anyhow::Result<u64> {
+    fn push<I: IntoIterator<Item = usize>>(&mut self, succ_iter: I) -> anyhow::Result<u64> {
         // collect the iterator inside the backrefs, to reuse the capacity already
         // allocated
         {
@@ -433,30 +431,39 @@ impl<E: EncodeAndEstimate> BvComp<E> {
         Ok(written_bits)
     }
 
-    /// Given an iterator over the nodes successors iterators, push them all.
-    /// The iterator must yield the successors of the node and the nodes HAVE
-    /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
-    /// empty iterator).
-    ///
-    /// This most commonly is called with a reference to a graph.
-    pub fn extend<L>(&mut self, iter_nodes: L) -> anyhow::Result<u64>
-    where
-        L: IntoLender,
-        L::Lender: for<'next> NodeLabelsLender<'next, Label = usize>,
-    {
-        let mut count = 0;
-        for_! ( (_, succ) in iter_nodes {
-            count += self.push(succ.into_iter())?;
-        });
-        // WAS
-        // iter_nodes.for_each(|(_, succ)| self.push(succ)).sum()
-        Ok(count)
-    }
-
     /// Consume the compressor return the number of bits written by
     /// flushing the encoder (0 for instantaneous codes)
-    pub fn flush(mut self) -> Result<usize, E::Error> {
+    fn flush(mut self) -> Result<usize, E::Error> {
         self.encoder.flush()
+    }
+}
+
+impl<E: EncodeAndEstimate> BvComp<E> {
+    /// This value for `min_interval_length` implies that no intervalization will be performed.
+    pub const NO_INTERVALS: usize = Compressor::NO_INTERVALS;
+
+    /// Creates a new BvGraph compressor.
+    pub fn new(
+        encoder: E,
+        compression_window: usize,
+        max_ref_count: usize,
+        min_interval_length: usize,
+        start_node: usize,
+    ) -> Self {
+        BvComp {
+            backrefs: CircularBuffer::new(compression_window + 1),
+            ref_counts: CircularBuffer::new(compression_window + 1),
+            encoder,
+            min_interval_length,
+            compression_window,
+            max_ref_count,
+            start_node,
+            curr_node: start_node,
+            compressors: (0..compression_window + 1)
+                .map(|_| Compressor::new())
+                .collect(),
+            arcs: 0,
+        }
     }
 }
 
