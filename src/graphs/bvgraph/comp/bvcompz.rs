@@ -20,10 +20,21 @@ struct ReferenceTableEntry {
     choosen: bool,
 }
 
-/// A BvGraph compressor based on the approximation algorithm described in Zuckerli,
+/// A BvGraph compressor based on the approximate algorithm described in
+/// "[Zuckerli: A New Compressed Representation for Graphs](
+/// https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9272613)",
 /// which is used to compress a graph into a BvGraph.   
-/// This compressor uses a dynamic algorithm to find the best references and his
-/// memory usage and precision can be traded off using the `chunk_size`.
+/// This compressor uses a dynamic algorithm to find the best allowed references,
+/// based on the the result of the greedy selection without the reference constraint.
+/// In the end, it greedily adds references that are valid but not included in the first
+/// selection.
+/// To perform the dynamic part of the algorithm, all references and backrefs should be
+/// should be stored.
+/// To avoid high memory consumption, the algorithm is executed on chunks of `chunk_size`
+/// elements.
+/// Note that unlike the standard reference selection algorithm (`BVComp`), it
+/// only writes the adjacency list to the child compressor when the chunk is full or when
+/// `flush` is called.
 #[derive(Debug, Clone)]
 pub struct BvCompZ<E> {
     /// The ring-buffer that stores the neighbours of the last
@@ -62,7 +73,10 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
     /// Push a new node to the compressor.
     /// The iterator must yield the successors of the node and the nodes HAVE
     /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
-    /// empty iterator)
+    /// empty iterator).
+    /// It returns a non-zero value only if is the last element of a chunk and
+    /// so all the pending adjancency lists are optimized and then written to
+    /// encoder.
     fn push<I: IntoIterator<Item = usize>>(&mut self, succ_iter: I) -> anyhow::Result<u64> {
         // collect the iterator inside the backrefs, to reuse the capacity already
         // allocated
@@ -118,6 +132,12 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
             if ref_list.is_empty() {
                 continue;
             }
+            // We don't check the reference selection constraint because
+            // here we are constructing what in the paper is calls the
+            // "maximum-weight directed forest", which is the same as executing
+            // the standard reference selection algorithm without the max_ref
+            // constraint
+
             // Get its compressor
             let compressor = &mut self.compressors[delta];
             // Compute how we would compress this
@@ -145,6 +165,13 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
             self.references.len(),
             self.curr_node - self.start_chunk_node
         );
+        // save the cost and the choosen reference
+        // the `references` array represents the maximum forest: each node
+        // contains the index of its parent.
+        // Note that in the forest exists a node from A to B
+        // if B choose A as a reference, so it's a forest because can exists
+        // multiple childrens but each node have at most one parent (my
+        // reference).
         self.saved_costs.push(saved_cost as f32);
         self.references.push(ref_delta);
         // update the current node
@@ -157,7 +184,7 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
     }
 
     /// Consume the compressor return the number of bits written by
-    /// flushing the encoder (0 for instantaneous codes)
+    /// flushing the encoder and writing the pending chunk
     fn flush(mut self) -> Result<usize, E::Error> {
         // TODO: convert anyhow error
         let remaining_chunck_bits = if self.compression_window > 0 {
@@ -205,8 +232,9 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         assert_eq!(n, self.curr_node - self.start_chunk_node);
         assert_eq!(self.start_chunk_node, self.curr_node - n);
 
-        // TODO: complete zuckerli algorithm using greedy selection of the nodes
-        // iterate over all the backrefs and write them
+        // Completing Zuckerli algorithm using greedy algorithm
+        // to add back the available references that are now valid
+        // and not included in the maximum forest
         // calculate length of previous references' chains
         let mut chain_length = vec![0usize; self.chunk_size];
         for i in 0..n {
@@ -253,11 +281,12 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             let deltas = 1 + self.compression_window.min(i);
             // compression windows is not zero, so compress the current node
             for delta in 1..deltas {
+                // Repeat the reference selection only on the arcs that don't
+                // violate the maximum reference constraint
                 if chain_length[i - delta] + forward_chain_length[i] + 1 > self.max_ref_count {
                     continue;
                 }
                 let reference_index = node_index - delta;
-                // Get the neighbours of this previous len_zetanode
                 let ref_list = &self.backrefs[reference_index];
                 // No neighbours, no compression
                 if ref_list.is_empty() {
@@ -318,7 +347,10 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         Ok(written_bits)
     }
 
-    pub fn update_references_for_max_lenght(&mut self) {
+    // Dynamic algorithm to calculate the best subforest of the maximum one
+    // that satisfy the maximum reference constraint.
+    fn update_references_for_max_lenght(&mut self) {
+
         // consistency checks
         let n = self.references.len();
         debug_assert!(self.saved_costs.len() == n);
@@ -336,21 +368,19 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             // 0 <= references[i] <= windows_size
             if reference != 0 {
                 // for each j in out_edges, for each i in out_edges[j]: j + window_size >= i
-                // circular buffer for the table but later we iterate in reverse order so we should always
-                // keep at least the references list
                 out_edges[i - reference].push(i);
             }
         }
-        // table for dynamic programming: the maximum weight of the subforest rooted in x
-        // that has no paths longer than max_lenght and where the root x
-        // is not part of a path longer than i (from 0..max_lenght)
-        // so using dyn[node][max_length] denotes the weight where
-        // we are considering node to be the root
+        // table for dynamic programming: the entry x, i of the table represent
+        // the maximum weight of the subforest rooted in x that has no paths
+        // longer than i.
+        // So using dyn[node][max_length] denotes the weight where we are
+        // considering "node" to be the root (so without reference).
         let mut dyn_table = vec![vec![ReferenceTableEntry::default(); self.max_ref_count + 1]; n];
 
         for i in (0..n).rev() {
             // in the paper M_r(i) so the case where I don't choose this node to be referred from other lists
-            // and favor the children so they can be the end of full (max_lenght) reference chains
+            // and favor the children so they can be have paths of the maximum length (n)
             let mut child_sum_full_chain = 0.0;
             for child in out_edges[i].iter() {
                 child_sum_full_chain += dyn_table[child][self.max_ref_count].saved_cost;
