@@ -217,7 +217,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
     ) -> Self {
         BvCompZ {
             backrefs: CircularBuffer::new(chunk_size + 1),
-            reference_costs: vec![vec![0; compression_window]; chunk_size + 1],
+            reference_costs: vec![vec![0; compression_window + 1]; chunk_size + 1],
             references: Vec::with_capacity(chunk_size + 1),
             saved_costs: Vec::with_capacity(chunk_size + 1),
             chunk_size,
@@ -260,36 +260,28 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                     forward_chain_length[parent].max(forward_chain_length[i] + 1);
             }
         }
-        for i in 0..n {
-            let node_index = self.curr_node - n + i;
+        for relative_index_in_chunk in 0..n {
+            let node_index = self.curr_node - n + relative_index_in_chunk;
             // recalculate the chain lenght because the reference can be changed
             // after a greedy re-add in a previouse iteration
-            if self.references[i] != 0 {
-                let parent = i - self.references[i];
-                chain_length[i] = chain_length[parent] + 1;
+            if self.references[relative_index_in_chunk] != 0 {
+                let parent = relative_index_in_chunk - self.references[relative_index_in_chunk];
+                chain_length[relative_index_in_chunk] = chain_length[parent] + 1;
             }
             let curr_list = &self.backrefs[node_index];
             // first try to compress the current node without references
-            let compressor = &mut self.compressors[i];
-            // Compute how we would compress this
-            compressor.compress(curr_list, None, self.min_interval_length)?;
-            let mut min_bits = {
-                let mut estimator = self.encoder.estimator();
-                // Write the compressed data
-                compressor.write(
-                    &mut estimator,
-                    node_index,
-                    Some(0),
-                    self.min_interval_length,
-                )?
-            };
+            let mut min_bits = self.reference_costs[relative_index_in_chunk][0];
 
-            let deltas = 1 + self.compression_window.min(i);
+            let deltas = 1 + self.compression_window.min(relative_index_in_chunk);
             // compression windows is not zero, so compress the current node
             for delta in 1..deltas {
                 // Repeat the reference selection only on the arcs that don't
                 // violate the maximum reference constraint
-                if chain_length[i - delta] + forward_chain_length[i] + 1 > self.max_ref_count {
+                if chain_length[relative_index_in_chunk - delta]
+                    + forward_chain_length[relative_index_in_chunk]
+                    + 1
+                    > self.max_ref_count
+                {
                     continue;
                 }
                 let reference_index = node_index - delta;
@@ -298,30 +290,18 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 if ref_list.is_empty() {
                     continue;
                 }
-                // Get its compressor
-                let compressor = &mut self.compressors[i - delta];
-                // Compute how we would compress this
-                compressor.compress(curr_list, Some(ref_list), self.min_interval_length)?;
-                // Compute how many bits it would use, using the mock writer
-                let bits = {
-                    let mut estimator = self.encoder.estimator();
-                    compressor.write(
-                        &mut estimator,
-                        node_index,
-                        Some(delta),
-                        self.min_interval_length,
-                    )?
-                };
+                // Read how many bits it would use for this reference
+                let bits = self.reference_costs[relative_index_in_chunk][delta];
                 // keep track of the best, it's strictly less so we keep the
                 // nearest one in the case of multiple equal ones
                 if bits < min_bits {
                     min_bits = bits;
-                    self.references[i] = delta;
+                    self.references[relative_index_in_chunk] = delta;
                 }
             }
-            if self.references[i] != 0 {
-                let parent = i - self.references[i];
-                chain_length[i] = chain_length[parent] + 1;
+            if self.references[relative_index_in_chunk] != 0 {
+                let parent = relative_index_in_chunk - self.references[relative_index_in_chunk];
+                chain_length[relative_index_in_chunk] = chain_length[parent] + 1;
             }
         }
 
