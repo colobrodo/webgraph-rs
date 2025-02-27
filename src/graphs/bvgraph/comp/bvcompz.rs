@@ -42,6 +42,8 @@ pub struct BvCompZ<E> {
     backrefs: CircularBuffer<Vec<usize>>,
     /// The references to the adjecency list to copy
     references: Vec<usize>,
+    /// Saved costs of each reference in the chunk and his compression window
+    reference_costs: Vec<Vec<u64>>,
     /// Stimated costs in saved bits using the current reference selection versus the extensive list   
     saved_costs: Vec<f32>,
     /// The number of nodes for which the reference selection algorithm is executed.
@@ -105,6 +107,7 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
             self.curr_node += 1;
             return Ok(written_bits);
         }
+        let relative_index_in_chunk = self.curr_node - self.start_chunk_node;
         // The delta of the best reference, by default 0 which is no compression
         let mut ref_delta = 0;
         let cost = {
@@ -118,6 +121,7 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
             )?
         };
         let mut saved_cost = 0;
+        self.reference_costs[relative_index_in_chunk][0] = cost;
         let mut min_bits = cost;
 
         let deltas = 1 + self
@@ -152,6 +156,7 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
                     self.min_interval_length,
                 )?
             };
+            self.reference_costs[relative_index_in_chunk][delta] = bits;
             // keep track of the best, it's strictly less so we keep the
             // nearest one in the case of multiple equal ones
             if bits < min_bits {
@@ -212,6 +217,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
     ) -> Self {
         BvCompZ {
             backrefs: CircularBuffer::new(chunk_size + 1),
+            reference_costs: vec![vec![0; compression_window]; chunk_size + 1],
             references: Vec::with_capacity(chunk_size + 1),
             saved_costs: Vec::with_capacity(chunk_size + 1),
             chunk_size,
@@ -350,7 +356,6 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
     // Dynamic algorithm to calculate the best subforest of the maximum one
     // that satisfy the maximum reference constraint.
     fn update_references_for_max_lenght(&mut self) {
-
         // consistency checks
         let n = self.references.len();
         debug_assert!(self.saved_costs.len() == n);
