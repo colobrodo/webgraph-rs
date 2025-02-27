@@ -183,6 +183,7 @@ impl<D: Decode> OffsetDegIter<D> {
             }
         }
 
+        self.decoder.num_of_residuals(nodes_left_to_decode as usize);
         // decode the extra nodes if needed
         if nodes_left_to_decode != 0 {
             // pre-allocate with capacity for efficiency

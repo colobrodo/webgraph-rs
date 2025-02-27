@@ -290,6 +290,7 @@ impl<D: Decode> Iter<D> {
 
         // decode the extra nodes if needed
         let nodes_left_to_decode = degree - results.len();
+        self.decoder.num_of_residuals(nodes_left_to_decode);
         if nodes_left_to_decode != 0 {
             // pre-allocate with capacity for efficiency
             let node_id_offset = nat2int(self.decoder.read_first_residual());

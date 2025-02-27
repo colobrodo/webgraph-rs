@@ -55,6 +55,7 @@ pub trait Decode {
     fn read_interval_count(&mut self) -> u64;
     fn read_interval_start(&mut self) -> u64;
     fn read_interval_len(&mut self) -> u64;
+    fn num_of_residuals(&mut self, _num_of_residuals: usize) {}
     fn read_first_residual(&mut self) -> u64;
     fn read_residual(&mut self) -> u64;
 }

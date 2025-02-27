@@ -190,4 +190,9 @@ impl<D: Decode, E: Encode> Decode for Converter<D, E> {
         self.encoder.write_residual(res).unwrap();
         res
     }
+
+    #[inline(always)]
+    fn num_of_residuals(&mut self, num_of_residuals: usize) {
+        self.encoder.num_of_residuals(num_of_residuals);
+    }
 }

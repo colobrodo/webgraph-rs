@@ -298,6 +298,7 @@ where
         }
 
         // decode just the first extra, if present (the others will be decoded on demand)
+        result.reader.num_of_residuals(nodes_left_to_decode);
         if nodes_left_to_decode != 0 {
             let node_id_offset = nat2int(result.reader.read_first_residual());
             result.next_residual_node = (node_id as i64 + node_id_offset) as usize;
