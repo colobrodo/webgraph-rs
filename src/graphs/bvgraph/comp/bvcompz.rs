@@ -227,7 +227,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             max_ref_count,
             start_chunk_node: start_node,
             curr_node: start_node,
-            compressors: (0..chunk_size + 1).map(|_| Compressor::new()).collect(),
+            compressors: (0..compression_window + 1).map(|_| Compressor::new()).collect(),
             arcs: 0,
         }
     }
@@ -268,8 +268,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 let parent = relative_index_in_chunk - self.references[relative_index_in_chunk];
                 chain_length[relative_index_in_chunk] = chain_length[parent] + 1;
             }
-            let curr_list = &self.backrefs[node_index];
-            // first try to compress the current node without references
+            // first get the number of bits used to compress the current node without references
             let mut min_bits = self.reference_costs[relative_index_in_chunk][0];
 
             let deltas = 1 + self.compression_window.min(relative_index_in_chunk);
@@ -306,6 +305,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         }
 
         let mut written_bits = 0;
+        let mut compressor = Compressor::new();
         for i in 0..n {
             let node_index = self.curr_node - n + i;
             let curr_list = &self.backrefs[node_index];
@@ -316,7 +316,6 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 let reference_index = node_index - reference;
                 Some(self.backrefs[reference_index].as_slice()).filter(|list| !list.is_empty())
             };
-            let compressor = &mut self.compressors[i];
             compressor.compress(curr_list, ref_list, self.min_interval_length)?;
             written_bits += compressor.write(
                 &mut self.encoder,
