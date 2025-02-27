@@ -63,7 +63,7 @@ pub struct BvCompZ<E> {
     min_interval_length: usize,
     /// The current node we are compressing
     curr_node: usize,
-    /// The first node of the chunck in which the nodes' references are calculated together
+    /// The first node of the chunk in which the nodes' references are calculated together
     start_chunk_node: usize,
     /// The number of arcs compressed so far
     pub arcs: u64,
@@ -187,13 +187,13 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
     /// flushing the encoder and writing the pending chunk
     fn flush(mut self) -> Result<usize, E::Error> {
         // TODO: convert anyhow error
-        let remaining_chunck_bits = if self.compression_window > 0 {
+        let remaining_chunk_bits = if self.compression_window > 0 {
             self.calculate_reference_selection().unwrap()
         } else {
             0
         };
         let flushed = self.encoder.flush()?;
-        Ok(remaining_chunck_bits as usize + flushed)
+        Ok(remaining_chunk_bits as usize + flushed)
     }
 }
 
