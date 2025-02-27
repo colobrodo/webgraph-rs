@@ -227,7 +227,9 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
             max_ref_count,
             start_chunk_node: start_node,
             curr_node: start_node,
-            compressors: (0..compression_window + 1).map(|_| Compressor::new()).collect(),
+            compressors: (0..compression_window + 1)
+                .map(|_| Compressor::new())
+                .collect(),
             arcs: 0,
         }
     }
