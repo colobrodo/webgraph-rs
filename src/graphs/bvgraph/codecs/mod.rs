@@ -73,6 +73,7 @@ pub trait Encode {
     fn write_interval_count(&mut self, value: u64) -> Result<usize, Self::Error>;
     fn write_interval_start(&mut self, value: u64) -> Result<usize, Self::Error>;
     fn write_interval_len(&mut self, value: u64) -> Result<usize, Self::Error>;
+    fn num_of_residuals(&mut self, _total_residuals: usize) {}
     fn write_first_residual(&mut self, value: u64) -> Result<usize, Self::Error>;
     fn write_residual(&mut self, value: u64) -> Result<usize, Self::Error>;
     fn flush(&mut self) -> Result<usize, Self::Error>;

@@ -159,6 +159,8 @@ impl Compressor {
             }
         }
         // write the residuals
+        // first signal the number of residuals to the encoder
+        writer.num_of_residuals(self.residuals.len());
         if !self.residuals.is_empty() {
             written_bits += writer
                 .write_first_residual(int2nat(self.residuals[0] as i64 - curr_node as i64))?
