@@ -37,14 +37,14 @@ struct ReferenceTableEntry {
 /// `flush` is called.
 #[derive(Debug, Clone)]
 pub struct BvCompZ<E> {
-    /// The ring-buffer that stores the neighbours of the last
-    /// `compression_window` neighbours
+    /// The ring-buffer that stores the neighbors of the last
+    /// `compression_window` neighbors
     backrefs: CircularBuffer<Vec<usize>>,
-    /// The references to the adjecency list to copy
+    /// The references to the adjacency list to copy
     references: Vec<usize>,
     /// Saved costs of each reference in the chunk and his compression window
     reference_costs: Vec<Vec<u64>>,
-    /// Stimated costs in saved bits using the current reference selection versus the extensive list   
+    /// Estimate costs in saved bits using the current reference selection versus the extensive list   
     saved_costs: Vec<f32>,
     /// The number of nodes for which the reference selection algorithm is executed.
     /// Used in the dynamic algorithm to manage the tradeoff between memory consumption
@@ -170,12 +170,12 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
             self.references.len(),
             self.curr_node - self.start_chunk_node
         );
-        // save the cost and the choosen reference
+        // save the cost and the chosen reference
         // the `references` array represents the maximum forest: each node
         // contains the index of its parent.
         // Note that in the forest exists a node from A to B
         // if B choose A as a reference, so it's a forest because can exists
-        // multiple childrens but each node have at most one parent (my
+        // multiple children but each node have at most one parent (my
         // reference).
         self.saved_costs.push(saved_cost as f32);
         self.references.push(ref_delta);
@@ -188,7 +188,7 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
         Ok(written_bits)
     }
 
-    /// Consume the compressor return the number of bits written by
+    /// Consumes the compressor and returns the number of bits written by
     /// flushing the encoder and writing the pending chunk
     fn flush(mut self) -> Result<usize, E::Error> {
         // TODO: convert anyhow error
@@ -236,7 +236,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
 
     fn calculate_reference_selection(&mut self) -> anyhow::Result<u64> {
         let n = self.references.len();
-        self.update_references_for_max_lenght();
+        self.update_references_for_max_length();
         assert_eq!(n, self.curr_node - self.start_chunk_node);
         assert_eq!(self.start_chunk_node, self.curr_node - n);
 
@@ -251,7 +251,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 chain_length[i] = chain_length[parent] + 1;
             }
         }
-        // calculate the length of nexts reference chain
+        // calculate the length of next reference chain
         let mut forward_chain_length = vec![0usize; self.chunk_size];
         for i in (0..n).rev() {
             if self.references[i] != 0 {
@@ -264,8 +264,8 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         }
         for relative_index_in_chunk in 0..n {
             let node_index = self.curr_node - n + relative_index_in_chunk;
-            // recalculate the chain lenght because the reference can be changed
-            // after a greedy re-add in a previouse iteration
+            // recalculate the chain length because the reference can be changed
+            // after a greedy re-add in a previous iteration
             if self.references[relative_index_in_chunk] != 0 {
                 let parent = relative_index_in_chunk - self.references[relative_index_in_chunk];
                 chain_length[relative_index_in_chunk] = chain_length[parent] + 1;
@@ -336,7 +336,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
 
     // Dynamic algorithm to calculate the best subforest of the maximum one
     // that satisfy the maximum reference constraint.
-    fn update_references_for_max_lenght(&mut self) {
+    fn update_references_for_max_length(&mut self) {
         // consistency checks
         let n = self.references.len();
         debug_assert!(self.saved_costs.len() == n);

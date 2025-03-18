@@ -80,7 +80,7 @@ pub(crate) struct Compressor {
     extra_nodes: Vec<usize>,
     /// The starts of the intervals
     left_interval: Vec<usize>,
-    /// The lengths of the intervls
+    /// The lengths of the intervals
     len_interval: Vec<usize>,
     /// The nodes left to encode as gaps
     residuals: Vec<usize>,
@@ -290,7 +290,7 @@ impl Compressor {
             } else {
                 match curr_list[j].cmp(&ref_list[k]) {
                     Ordering::Greater => {
-                        /* If we trespassed the currented element of the reference list, we
+                        /* If we trespassed the current element of the reference list, we
                         increase the block length. k gets increased. */
                         k += 1;
                         curr_block_len += 1;
