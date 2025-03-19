@@ -71,7 +71,7 @@ pub struct BvCompZ<E> {
     pub arcs: u64,
 }
 
-impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
+impl<E: EncodeAndEstimate> GraphCompressor for BvCompZ<E> {
     /// Push a new node to the compressor.
     /// The iterator must yield the successors of the node and the nodes HAVE
     /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
@@ -190,8 +190,7 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvCompZ<E> {
 
     /// Consumes the compressor and returns the number of bits written by
     /// flushing the encoder and writing the pending chunk
-    fn flush(mut self) -> Result<usize, E::Error> {
-        // TODO: convert anyhow error
+    fn flush(mut self) -> anyhow::Result<usize> {
         let remaining_chunk_bits = if self.compression_window > 0 {
             self.calculate_reference_selection().unwrap()
         } else {

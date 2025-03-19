@@ -9,9 +9,9 @@ use crate::prelude::*;
 use core::cmp::Ordering;
 use lender::prelude::*;
 
-pub trait GraphCompressor<E: EncodeAndEstimate> {
+pub trait GraphCompressor {
     fn push<I: IntoIterator<Item = usize>>(&mut self, succ_iter: I) -> anyhow::Result<u64>;
-    fn flush(self) -> Result<usize, E::Error>;
+    fn flush(self) -> anyhow::Result<usize>;
 
     /// Given an iterator over the nodes successors iterators, push them all.
     /// The iterator must yield the successors of the node and the nodes HAVE
@@ -330,7 +330,7 @@ impl Compressor {
     }
 }
 
-impl<E: EncodeAndEstimate> GraphCompressor<E> for BvComp<E> {
+impl<E: EncodeAndEstimate> GraphCompressor for BvComp<E> {
     /// Push a new node to the compressor.
     /// The iterator must yield the successors of the node and the nodes HAVE
     /// TO BE CONTIGUOUS (i.e. if a node has no neighbours you have to pass an
@@ -435,8 +435,9 @@ impl<E: EncodeAndEstimate> GraphCompressor<E> for BvComp<E> {
 
     /// Consume the compressor return the number of bits written by
     /// flushing the encoder (0 for instantaneous codes)
-    fn flush(mut self) -> Result<usize, E::Error> {
-        self.encoder.flush()
+    fn flush(mut self) -> anyhow::Result<usize> {
+        let flushed = self.encoder.flush()?;
+        Ok(flushed)
     }
 }
 
