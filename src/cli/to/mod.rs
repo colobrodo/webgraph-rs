@@ -9,6 +9,7 @@ use clap::{ArgMatches, Command};
 
 pub mod arcs;
 pub mod ascii;
+pub mod bin;
 pub mod bvgraph;
 pub mod endianness;
 
@@ -21,6 +22,7 @@ pub fn cli(command: Command) -> Command {
         .arg_required_else_help(true)
         .allow_external_subcommands(true);
     let sub_command = ascii::cli(sub_command);
+    let sub_command = bin::cli(sub_command);
     let sub_command = bvgraph::cli(sub_command);
     let sub_command = arcs::cli(sub_command);
     let sub_command = endianness::cli(sub_command);
@@ -30,6 +32,7 @@ pub fn cli(command: Command) -> Command {
 pub fn main(submatches: &ArgMatches) -> Result<()> {
     match submatches.subcommand() {
         Some((ascii::COMMAND_NAME, sub_m)) => ascii::main(sub_m),
+        Some((bin::COMMAND_NAME, sub_m)) => bin::main(sub_m),
         Some((bvgraph::COMMAND_NAME, sub_m)) => bvgraph::main(sub_m),
         Some((arcs::COMMAND_NAME, sub_m)) => arcs::main(sub_m),
         Some((endianness::COMMAND_NAME, sub_m)) => endianness::main(sub_m),
