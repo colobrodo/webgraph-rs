@@ -5,9 +5,73 @@
  * SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
  */
 
+use std::{collections::HashMap, fmt, time::Instant};
+
 use super::bvcomp::Compressor;
 use crate::prelude::*;
 use common_traits::Sequence;
+
+#[derive(Clone, Debug)]
+struct Measure {
+    name: String,
+    duration: f64,
+}
+
+#[derive(Clone, Debug)]
+struct SectionProfiler {
+    measures: HashMap<String, Measure>,
+    last_time: Instant,
+    current_section: Option<String>,
+}
+
+impl SectionProfiler {
+    fn new() -> Self {
+        SectionProfiler {
+            measures: HashMap::new(),
+            last_time: Instant::now(),
+            current_section: None,
+        }
+    }
+
+    fn start_section(&mut self, name: &str) {
+        if !self.measures.contains_key(name) {}
+        self.current_section = Some(name.to_string());
+        self.last_time = Instant::now();
+    }
+
+    fn end_section(&mut self) {
+        let elapsed = self.last_time.elapsed().as_secs_f64();
+        let current_section = self.current_section.clone().unwrap();
+        if let Some(measure) = self.measures.get_mut(&current_section) {
+            measure.duration += elapsed;
+        } else {
+            self.measures.insert(
+                current_section.clone(),
+                Measure {
+                    name: current_section,
+                    duration: elapsed,
+                },
+            );
+        }
+        self.current_section = None;
+        self.last_time = std::time::Instant::now();
+    }
+
+    fn print_all(&self) {
+        let total_duration = self
+            .measures
+            .iter()
+            .map(|(_, measure)| measure.duration)
+            .sum::<f64>();
+        for (_name, measure) in self.measures.iter() {
+            let percentage = measure.duration / total_duration * 100.0;
+            eprintln!(
+                "{}: {:.3}s ({:.2} %)",
+                measure.name, measure.duration, percentage
+            );
+        }
+    }
+}
 
 /// An Entry for the table used to save the intermediate computation
 /// of the dynamic algorithm to select the best references.
@@ -37,6 +101,8 @@ struct ReferenceTableEntry {
 /// `flush` is called.
 #[derive(Debug, Clone)]
 pub struct BvCompZ<E> {
+    /// For debug instrumentation
+    profiler: SectionProfiler,
     /// The ring-buffer that stores the neighbors of the last
     /// `compression_window` neighbors
     backrefs: CircularBuffer<Vec<usize>>,
@@ -88,6 +154,8 @@ impl<E: EncodeAndEstimate> GraphCompressor for BvCompZ<E> {
             succ_vec.extend(succ_iter);
             self.backrefs.replace(self.curr_node, succ_vec);
         }
+        self.profiler
+            .start_section("Creating the maximum reference forest");
         // get the ref
         let curr_list = &self.backrefs[self.curr_node];
         self.arcs += curr_list.len() as u64;
@@ -105,6 +173,7 @@ impl<E: EncodeAndEstimate> GraphCompressor for BvCompZ<E> {
             )?;
             // update the current node
             self.curr_node += 1;
+            self.profiler.end_section();
             return Ok(written_bits);
         }
         let relative_index_in_chunk = self.curr_node - self.start_chunk_node;
@@ -182,6 +251,7 @@ impl<E: EncodeAndEstimate> GraphCompressor for BvCompZ<E> {
         // update the current node
         let mut written_bits = 0;
         self.curr_node += 1;
+        self.profiler.end_section();
         if self.references.len() >= self.chunk_size {
             written_bits = self.calculate_reference_selection()?;
         }
@@ -197,6 +267,7 @@ impl<E: EncodeAndEstimate> GraphCompressor for BvCompZ<E> {
             0
         };
         let flushed = self.encoder.flush()?;
+        self.profiler.print_all();
         Ok(remaining_chunk_bits as usize + flushed)
     }
 }
@@ -215,6 +286,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         start_node: usize,
     ) -> Self {
         BvCompZ {
+            profiler: SectionProfiler::new(),
             backrefs: CircularBuffer::new(chunk_size + 1),
             reference_costs: vec![vec![0; compression_window + 1]; chunk_size + 1],
             references: Vec::with_capacity(chunk_size + 1),
@@ -235,7 +307,10 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
 
     fn calculate_reference_selection(&mut self) -> anyhow::Result<u64> {
         let n = self.references.len();
+        self.profiler
+            .start_section("Removing reference from maximum forest");
         self.update_references_for_max_length();
+        self.profiler.end_section();
         assert_eq!(n, self.curr_node - self.start_chunk_node);
         assert_eq!(self.start_chunk_node, self.curr_node - n);
 
@@ -243,6 +318,8 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
         // to add back the available references that are now valid
         // and not included in the maximum forest
         // calculate length of previous references' chains
+        self.profiler
+            .start_section("Calculating length of chain lengths");
         let mut chain_length = vec![0usize; self.chunk_size];
         for i in 0..n {
             if self.references[i] != 0 {
@@ -250,6 +327,10 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 chain_length[i] = chain_length[parent] + 1;
             }
         }
+        self.profiler.end_section();
+
+        self.profiler
+            .start_section("Calculating forward chain lengths");
         // calculate the length of next reference chain
         let mut forward_chain_length = vec![0usize; self.chunk_size];
         for i in (0..n).rev() {
@@ -261,6 +342,10 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                     forward_chain_length[parent].max(forward_chain_length[i] + 1);
             }
         }
+        self.profiler.end_section();
+
+        self.profiler
+            .start_section("Greedy re-insertion of valid references");
         for relative_index_in_chunk in 0..n {
             let node_index = self.curr_node - n + relative_index_in_chunk;
             // recalculate the chain length because the reference can be changed
@@ -304,7 +389,10 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 chain_length[relative_index_in_chunk] = chain_length[parent] + 1;
             }
         }
+        self.profiler.end_section();
 
+        self.profiler
+            .start_section("Writing nodes of current chunks");
         let mut written_bits = 0;
         let mut compressor = Compressor::new();
         for i in 0..n {
@@ -325,6 +413,7 @@ impl<E: EncodeAndEstimate> BvCompZ<E> {
                 self.min_interval_length,
             )?;
         }
+        self.profiler.end_section();
         // reset the chunk starting point
         self.start_chunk_node = self.curr_node;
         // clear the refs array and the backrefs
