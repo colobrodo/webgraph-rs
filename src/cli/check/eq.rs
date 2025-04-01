@@ -49,6 +49,8 @@ pub fn compare_graphs(args: CliArgs) -> Result<()> {
 
     let mut first_iter = first_graph.iter().enumerate();
     let mut second_iter = second_graph.iter();
+
+    pl.start("Start comparing the graphs...");
     while let Some((i, (true_node_id, true_succ))) = first_iter.next() {
         let (node_id, succ) = second_iter.next().unwrap();
 
