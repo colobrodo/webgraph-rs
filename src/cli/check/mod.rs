@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::{ArgMatches, Command};
 
 pub mod ef;
+pub mod eq;
 
 pub const COMMAND_NAME: &str = "check";
 
@@ -18,12 +19,14 @@ pub fn cli(command: Command) -> Command {
         .arg_required_else_help(true)
         .allow_external_subcommands(true);
     let sub_command = ef::cli(sub_command);
+    let sub_command = eq::cli(sub_command);
     command.subcommand(sub_command.display_order(0))
 }
 
 pub fn main(submatches: &ArgMatches) -> Result<()> {
     match submatches.subcommand() {
         Some((ef::COMMAND_NAME, sub_m)) => ef::main(sub_m),
+        Some((eq::COMMAND_NAME, sub_m)) => eq::main(sub_m),
         Some((command_name, _)) => {
             eprintln!("Unknown command: {:?}", command_name);
             std::process::exit(1);

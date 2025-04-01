@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
  */
 
-use std::{collections::HashMap, fmt, time::Instant};
+use std::{collections::HashMap, time::Instant};
 
 use super::bvcomp::Compressor;
 use crate::prelude::*;
