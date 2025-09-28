@@ -21,6 +21,9 @@ pub use dec_dyn::*;
 mod dec_stats;
 pub use dec_stats::*;
 
+mod dec_stats_and_count;
+pub use dec_stats_and_count::*;
+
 mod enc_const;
 pub use enc_const::*;
 
