@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::{ArgMatches, Command};
 
 pub mod codes;
+pub mod stats;
 
 pub const COMMAND_NAME: &str = "analyze";
 
@@ -18,11 +19,13 @@ pub fn cli(command: Command) -> Command {
         .arg_required_else_help(true)
         .allow_external_subcommands(true);
     let sub_command = codes::cli(sub_command);
+    let sub_command = stats::cli(sub_command);
     command.subcommand(sub_command.display_order(0))
 }
 
 pub fn main(submatches: &ArgMatches) -> Result<()> {
     match submatches.subcommand() {
+        Some((stats::COMMAND_NAME, sub_m)) => stats::main(sub_m),
         Some((codes::COMMAND_NAME, sub_m)) => codes::main(sub_m),
         Some((command_name, _)) => {
             eprintln!("Unknown command: {:?}", command_name);
