@@ -128,6 +128,54 @@ pub fn store_perm(data: &[usize], perm: impl AsRef<Path>, epserde: bool) -> Resu
     }
 }
 
+pub fn store_cluster_file(
+    perm: &[usize],
+    cluster_sizes: &[usize],
+    path: impl AsRef<Path>,
+) -> Result<()> {
+    let mut file = std::fs::File::create(&path).with_context(|| {
+        format!(
+            "Could not create permutation at {}",
+            path.as_ref().display()
+        )
+    })?;
+    let mut buf = BufWriter::new(&mut file);
+
+    // write the permutation
+    println!("Writing permutation of len {}", perm.len());
+    buf.write_all(&perm.len().to_be_bytes()).with_context(|| {
+        format!(
+            "Could not write permutation size to {}",
+            path.as_ref().display()
+        )
+    })?;
+    for word in perm.iter() {
+        buf.write_all(&word.to_be_bytes()).with_context(|| {
+            format!("Could not write permutation to {}", path.as_ref().display())
+        })?;
+    }
+    // write the cluster sizes
+    println!("Writing {} clusters", cluster_sizes.len());
+    buf.write_all(&cluster_sizes.len().to_be_bytes())
+        .with_context(|| {
+            format!(
+                "Could not write number of clusters to {}",
+                path.as_ref().display()
+            )
+        })?;
+    for cluster_size in cluster_sizes.iter() {
+        buf.write_all(&cluster_size.to_be_bytes())
+            .with_context(|| {
+                format!(
+                    "Could not write cluster size to {}",
+                    path.as_ref().display()
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
 pub fn main(global_args: GlobalArgs, args: CliArgs) -> Result<()> {
     if args.perm.is_none() && args.work_dir.is_none() {
         log::warn!(concat!(
@@ -241,14 +289,34 @@ where
     .context("Could not compute the LLP")?;
 
     log::info!("Elapsed: {}", start.elapsed().as_secs_f64());
-    if let Some(perm_path) = args.perm {
+    if let Some(clustr_path) = args.perm {
         let thread_pool = get_thread_pool(args.num_threads.num_threads);
         thread_pool.install(|| -> Result<()> {
-            let labels = combine_labels(work_dir)?;
+            let mut labels = combine_labels(work_dir)?;
             log::info!("Combined labels...");
             let rank_perm = labels_to_ranks(&labels);
-            log::info!("Saving permutation...");
-            store_perm(&rank_perm, perm_path, args.epserde)?;
+            log::info!("Computing cluster dimensions...");
+            labels.sort();
+            let mut cluster_sizes = Vec::new();
+            let mut previous_label = labels[0];
+            let mut previous_cluster = 0;
+            let mut bucket = Vec::new();
+            for (i, &label) in labels.iter().enumerate() {
+                if label != previous_label {
+                    previous_label = label;
+                    let cluster_size = i - previous_cluster;
+                    if cluster_size >= bucket.len() {
+                        bucket.resize(cluster_size + 1, 0);
+                    }
+                    bucket[cluster_size] += 1;
+                    cluster_sizes.push(i);
+                    previous_cluster = i;
+                }
+            }
+            cluster_sizes.push(labels.len());
+            log::info!("Saving clustering...");
+            store_cluster_file(&rank_perm, &cluster_sizes, clustr_path)?;
+            println!("Cluster size distribution: {:?}", bucket);
             Ok(())
         })?;
     }

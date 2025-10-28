@@ -6,14 +6,13 @@
  * SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
  */
 
+use crate::run::llp::store_cluster_file;
 use crate::{get_thread_pool, GlobalArgs, NumThreadsArg};
 use anyhow::Result;
 use clap::Parser;
 use webgraph_algo::{combine_labels, labels_to_ranks};
 
 use std::path::PathBuf;
-
-use super::llp::store_perm;
 
 #[derive(Parser, Debug)]
 #[command(name = "llp-combine", about = "Combine the pre-compute labels from Layered Label Propagation into permutation.", long_about = None)]
@@ -39,8 +38,18 @@ pub fn main(_global_args: GlobalArgs, args: CliArgs) -> Result<()> {
         let labels = combine_labels(args.work_dir)?;
         log::info!("Combined labels...");
         let rank_perm = labels_to_ranks(&labels);
-        log::info!("Saving permutation...");
-        store_perm(&rank_perm, &args.perm, args.epserde)?;
+        println!("size of clusters: ");
+        let mut cluster_sizes = Vec::new();
+        let mut previous_label = labels[0];
+        for (i, &x) in rank_perm.iter().enumerate() {
+            if labels[x] != previous_label {
+                assert!(labels[x] < previous_label);
+                previous_label = labels[x];
+                cluster_sizes.push(i);
+            }
+        }
+        log::info!("Saving clustering...");
+        store_cluster_file(&rank_perm, &cluster_sizes, &args.perm)?;
         Ok(())
     })
 }
