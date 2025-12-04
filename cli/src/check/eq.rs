@@ -9,8 +9,9 @@ use anyhow::Result;
 use clap::Args;
 use dsi_bitstream::prelude::*;
 use dsi_progress_logger::prelude::*;
+use lender::*;
 use std::{path::PathBuf, process::exit};
-use webgraph::traits::{graph, SequentialLabeling};
+use webgraph::traits::{labels, EqError, SequentialLabeling};
 
 #[derive(Args, Debug)]
 #[command(name = "eq", about = "Checks that two graphs have the same contents, listed in the same order. Useful to check equality when two graph are compressed with different parameters or with different algorithms (think about reference selection).", long_about = None)]
@@ -42,11 +43,27 @@ pub fn compare_graphs(args: CliArgs) -> Result<()> {
 
     pl.start("Start comparing the graphs...");
 
-    let result = graph::eq(&first_graph, &second_graph);
-    if let Err(eq_error) = result {
+    if first_graph.num_nodes() != second_graph.num_nodes() {
+        let eq_error = EqError::NumNodes {
+            first: first_graph.num_nodes(),
+            second: second_graph.num_nodes(),
+        };
         eprintln!("{}", eq_error);
         exit(1);
     }
+    for_!(((node0, succ0), (node1, succ1)) in first_graph.iter().zip(second_graph.iter()) {
+        debug_assert_eq!(node0, node1);
+        pl.light_update();
+        let mut succ0 = succ0.into_iter().collect::<Vec<_>>();
+        let mut succ1 = succ1.into_iter().collect::<Vec<_>>();
+        succ0.sort();
+        succ1.sort();
+        let result = labels::eq_succs(node0, succ0, succ1);
+        if let Err(eq_error) = result {
+            eprintln!("{}", eq_error);
+            exit(1);
+        }
+    });
 
     pl.done();
     Ok(())
