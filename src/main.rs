@@ -887,17 +887,16 @@ fn bench_random_graph(
         let mut rng = SmallRng::seed_from_u64(seed);
         let mut c: u64 = 0;
         let num_nodes = graph.num_nodes();
-        let sampled_nodes = (0..samples)
-            .map(|_| rng.random_range(0..num_nodes))
-            .collect::<Vec<_>>();
         let start = std::time::Instant::now();
         if first {
-            for node in sampled_nodes {
+            for _ in 0..num_nodes {
+                let node = rng.random_range(0..num_nodes);
                 black_box(graph.successors(node).into_iter().next().unwrap_or(0));
             }
             c = samples as u64;
         } else {
-            for node in sampled_nodes {
+            for _ in 0..num_nodes {
+                let node = rng.random_range(0..num_nodes);
                 c += black_box(graph.successors(node).into_iter().count() as u64);
             }
         }
