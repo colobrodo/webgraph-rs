@@ -18,6 +18,7 @@ use super::CompressorType;
 use super::Estimator;
 use super::{CompressionParameters, ContextModel};
 
+/// Type alias for an encoder builder using `HuffmanEstimator` with an owned `CostModel`.
 type HuffmanEstimatedEncoderBuilder<EP, C> =
     HuffmanGraphEncoderBuilder<HuffmanEstimator<EP, CostModel<EP>, C>, C, EP>;
 
@@ -53,6 +54,7 @@ trait ThreadEstimatorFactory<'a, E: Encode + Send + Sync> {
     fn create_estimator(&self) -> E;
 }
 
+/// Factory that creates default-constructed estimators for parallel compression.
 struct DefaultEstimatorFactory<E: Encode + Send + Sync + Default> {
     _marker: core::marker::PhantomData<E>,
 }
@@ -887,6 +889,8 @@ fn parallel_write_graph_to_disk<
     Ok(())
 }
 
+/// Write the final compressed graph to disk sequentially.
+/// Builds the encoder from histograms, writes header, compresses nodes, and saves properties.
 fn write_graph_to_disk<
     EP: EncodeParams,
     E: Encode,
